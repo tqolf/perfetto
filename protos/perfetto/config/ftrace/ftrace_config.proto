@@ -382,8 +382,11 @@ message FtraceConfig {
     optional bool enabled = 1;
     // Per-cpu in-memory ring buffer cap. Memory ~= this * num_cpus.
     optional uint32 per_cpu_mem_limit_kb = 2;
-    // Target retained window before the trigger (seconds). Best-effort, also
-    // bounded by per_cpu_mem_limit_kb.
+    // Retained window measured back from the snapshot instant (seconds): on a
+    // trigger, only pages newer than (now - retain_seconds) are parsed. Bounds
+    // both the retained data and the trigger-time parse work. Also bounded by
+    // per_cpu_mem_limit_kb (+ disk overflow). Only applied when the ftrace
+    // clock is boot; otherwise the whole buffer is parsed. 0 = no time trim.
     optional uint32 retain_seconds = 3;
     // Optional on-disk overflow ring directory. When set together with
     // per_cpu_disk_limit_kb, pages evicted from the memory ring are spilled to

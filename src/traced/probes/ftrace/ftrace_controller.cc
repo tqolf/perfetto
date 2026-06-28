@@ -525,15 +525,28 @@ void FtraceController::ParseDeferredRawForClone(FtraceDataSource* target_ds) {
       if (ds != target_ds)
         continue;
       const ProtoTranslationTable* table = instance->table.get();
-      // Window is bounded by the ring buffer capacity (per_cpu_mem_limit_kb).
-      // Time-based trimming via retain_seconds is a future refinement.
+      // Time-window trimming: keep only the last retain_seconds of pages, which
+      // also bounds the parse work (and thus peak CPU on trigger). The page
+      // timestamps are in the ftrace clock; comparing them to GetBootTimeNs()
+      // is only valid when that clock is boot (FTRACE_CLOCK_UNSPECIFIED). For
+      // any other clock, fall back to parsing the whole buffer (cutoff 0).
+      uint64_t cutoff_ts = 0;
+      const uint32_t retain_s = ds_config->deferred_raw_retain_seconds;
+      const bool boot_clock =
+          instance->ftrace_config_muxer->ftrace_clock() ==
+          protos::pbzero::FtraceClock::FTRACE_CLOCK_UNSPECIFIED;
+      if (retain_s > 0 && boot_clock) {
+        uint64_t now = static_cast<uint64_t>(base::GetBootTimeNs().count());
+        uint64_t window_ns = static_cast<uint64_t>(retain_s) * 1000000000ull;
+        cutoff_ts = window_ns < now ? now - window_ns : 0;
+      }
       for (size_t cpu = 0; cpu < ds->num_raw_ring_buffers(); cpu++) {
         RawFtraceRingBuffer* raw = ds->raw_ring_buffer(cpu);
         if (!raw)
           continue;
         CompactSchedBuffer compact_sched_buf;
         CpuReader::ParseRawRingBufferInto(
-            raw, /*cutoff_ts=*/0, cpu, ds_config, ds->trace_writer(),
+            raw, cutoff_ts, cpu, ds_config, ds->trace_writer(),
             ds->mutable_metadata(), ds->mutable_parse_errors(),
             ds->mutable_bundle_end_timestamp(cpu), &compact_sched_buf, table,
             &symbolizer_);
@@ -642,6 +655,10 @@ bool FtraceController::AddDataSource(FtraceDataSource* data_source) {
     // tracefs, captured above). It must be torn down when this data source is
     // removed, before the instance — and its tracefs — can be destroyed.
     pid_filter_watcher_owner_ = data_source;
+  } else if (!data_source->config().pid_filter_control_file().empty()) {
+    PERFETTO_ELOG(
+        "pid_filter_control_file ignored: a dynamic pid-filter watcher is "
+        "already active (only one concurrent session is supported).");
   }
 
   const FtraceDataSourceConfig* ds_config =
