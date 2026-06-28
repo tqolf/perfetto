@@ -18,6 +18,7 @@
 
 #include <vector>
 
+#include "perfetto/ext/base/temp_file.h"
 #include "test/gtest_and_gmock.h"
 
 namespace perfetto {
@@ -73,6 +74,49 @@ TEST(RawFtraceRingBufferTest, ClearResetsSize) {
   buf.PushPage(MakePage(1).data(), 1);
   buf.Clear();
   EXPECT_EQ(buf.size(), 0u);
+}
+
+TEST(RawFtraceRingBufferTest, DiskOverflowRetainsEvictedPages) {
+  base::TempFile f = base::TempFile::Create();
+  RawFtraceRingBuffer buf(/*capacity_pages=*/2, kPageSize);
+  ASSERT_TRUE(buf.EnableDiskOverflow(f.path(), /*disk_capacity_pages=*/4));
+  // Mem holds newest 2 (ts 4,5); disk holds the evicted older 1,2,3.
+  for (uint64_t ts = 1; ts <= 5; ts++)
+    buf.PushPage(MakePage(static_cast<uint8_t>(ts)).data(), ts);
+
+  std::vector<uint64_t> seen;
+  buf.ForEachPageSince(0, [&](const uint8_t* p, uint64_t ts) {
+    seen.push_back(ts);
+    EXPECT_EQ(p[0], static_cast<uint8_t>(ts));  // Content survives disk round-trip.
+  });
+  EXPECT_EQ(seen, (std::vector<uint64_t>{1, 2, 3, 4, 5}));  // All retained, in order.
+}
+
+TEST(RawFtraceRingBufferTest, DiskOverflowDropsOldestWhenTotalFull) {
+  base::TempFile f = base::TempFile::Create();
+  RawFtraceRingBuffer buf(/*capacity_pages=*/2, kPageSize);
+  ASSERT_TRUE(buf.EnableDiskOverflow(f.path(), /*disk_capacity_pages=*/2));
+  // Total capacity = mem 2 + disk 2 = 4. Push 6 -> keep newest 4 (ts 3..6).
+  for (uint64_t ts = 1; ts <= 6; ts++)
+    buf.PushPage(MakePage(static_cast<uint8_t>(ts)).data(), ts);
+
+  std::vector<uint64_t> seen;
+  buf.ForEachPageSince(0,
+                       [&](const uint8_t*, uint64_t ts) { seen.push_back(ts); });
+  EXPECT_EQ(seen, (std::vector<uint64_t>{3, 4, 5, 6}));
+}
+
+TEST(RawFtraceRingBufferTest, DiskOverflowRespectsCutoff) {
+  base::TempFile f = base::TempFile::Create();
+  RawFtraceRingBuffer buf(/*capacity_pages=*/2, kPageSize);
+  ASSERT_TRUE(buf.EnableDiskOverflow(f.path(), /*disk_capacity_pages=*/4));
+  for (uint64_t ts : {10u, 20u, 30u, 40u, 50u})
+    buf.PushPage(MakePage(static_cast<uint8_t>(ts)).data(), ts);
+
+  std::vector<uint64_t> seen;
+  buf.ForEachPageSince(30,
+                       [&](const uint8_t*, uint64_t ts) { seen.push_back(ts); });
+  EXPECT_EQ(seen, (std::vector<uint64_t>{30, 40, 50}));  // Spans disk + mem.
 }
 
 }  // namespace

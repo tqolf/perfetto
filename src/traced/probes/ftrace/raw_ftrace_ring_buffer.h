@@ -19,9 +19,11 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "perfetto/ext/base/paged_memory.h"
+#include "perfetto/ext/base/scoped_file.h"
 
 namespace perfetto {
 
@@ -45,7 +47,15 @@ class RawFtraceRingBuffer {
   // |page_ts| (the page's base timestamp, used for time-windowed retrieval).
   void PushPage(const uint8_t* page, uint64_t page_ts);
 
-  // Iterates retained pages with page_ts >= cutoff_ts, oldest-to-newest.
+  // Enables an on-disk overflow ring at |path| holding up to
+  // |disk_capacity_pages| pages. Once enabled, pages evicted from the (newest)
+  // memory ring are spilled to disk instead of dropped, extending the retained
+  // window to (capacity_pages + disk_capacity_pages). Returns false if the
+  // backing file could not be created/sized. Call once, before PushPage.
+  bool EnableDiskOverflow(const std::string& path, size_t disk_capacity_pages);
+
+  // Iterates retained pages with page_ts >= cutoff_ts, oldest-to-newest
+  // (disk pages first, then memory pages).
   void ForEachPageSince(
       uint64_t cutoff_ts,
       const std::function<void(const uint8_t*, uint64_t)>& fn) const;
@@ -55,6 +65,8 @@ class RawFtraceRingBuffer {
   void Clear() {
     count_ = 0;
     head_ = 0;
+    disk_count_ = 0;
+    disk_head_ = 0;
   }
 
  private:
@@ -64,6 +76,9 @@ class RawFtraceRingBuffer {
   uint8_t* SlotDataMut(size_t slot) {
     return reinterpret_cast<uint8_t*>(storage_.Get()) + slot * page_size_;
   }
+  bool disk_enabled() const { return disk_capacity_pages_ > 0; }
+  // Appends one page to the on-disk overflow ring (dropping its oldest if full).
+  void DiskPush(const uint8_t* page, uint64_t page_ts);
 
   const size_t capacity_pages_;
   const size_t page_size_;
@@ -71,6 +86,13 @@ class RawFtraceRingBuffer {
   std::vector<uint64_t> page_ts_;  // size capacity_pages_, indexed by slot.
   size_t head_ = 0;                // Slot index of the next write.
   size_t count_ = 0;               // Number of valid pages (<= capacity).
+
+  // Optional on-disk overflow ring (older pages evicted from memory).
+  base::ScopedFile disk_fd_;
+  size_t disk_capacity_pages_ = 0;
+  std::vector<uint64_t> disk_page_ts_;  // size disk_capacity_pages_.
+  size_t disk_head_ = 0;
+  size_t disk_count_ = 0;
 };
 
 }  // namespace perfetto
