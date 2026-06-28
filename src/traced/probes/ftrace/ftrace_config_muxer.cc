@@ -171,6 +171,7 @@ bool ValidateKprobeName(const std::string& name) {
 // details.
 bool HasExclusiveFeatures(const FtraceConfig& request) {
   return !request.tids_to_trace().empty() || !request.pids_to_trace().empty() ||
+         !request.pid_filter_control_file().empty() ||
          !request.tracefs_options().empty() ||
          !request.tracing_cpumask().empty();
 }
