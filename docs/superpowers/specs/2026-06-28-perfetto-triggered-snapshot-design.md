@@ -248,6 +248,14 @@ watchdog_posix.cc: Memory window of 358 MB is above the 34 MB limit.
 
 注：触发由含 `activate_triggers: "snap"` 的配置发送（`perfetto -c trig.cfg`），**不是** `--trigger`（该选项不存在）；CLONE_SNAPSHOT 快照写到 `-o` 路径加计数后缀（`file.0`、`file.1`…）。
 
+### 磁盘溢出段 e2e 实测（大 N，绕开内存护栏）
+配置 tiny 内存段（`per_cpu_mem_limit_kb=64`）+ 磁盘溢出（`disk_overflow_path=/tmp/draw`、`per_cpu_disk_limit_kb=2048`），真机跑 deferred-raw + CLONE_SNAPSHOT：
+
+- traced_probes 为每个 CPU 创建并预分配磁盘环形文件 `deferred_raw_cpu<N>`（128 个，各 2 MB）；内存段仅 64 KB/cpu（总 8 MB，**远在内存护栏内**）。
+- 触发后快照 **9.15 MB，含 ~104 万 ftrace 事件**（sched_switch 711,288 + sched_waking 328,756）——对比同机纯内存 256 KB/cpu 仅 ~24.7 万事件。**磁盘溢出把保留窗口扩大了数倍，且内存占用不升**。
+
+结论：磁盘溢出段让"大 N + 多核"可行——用顺序磁盘 IO 换内存，内存段保持在护栏内，溢出页在触发时一并解析进快照。这是 §15 内存护栏约束的解法之一（另一解法是 §16 进程过滤降事件量）。
+
 ## 16. 进程级事件过滤（可选，可动态增删）
 
 ### 动机
