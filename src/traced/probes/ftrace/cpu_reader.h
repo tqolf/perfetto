@@ -39,6 +39,7 @@
 namespace perfetto {
 
 class FtraceDataSource;
+class RawFtraceRingBuffer;
 class LazyKernelSymbolizer;
 class ProtoTranslationTable;
 struct FtraceDataSourceConfig;
@@ -422,6 +423,24 @@ class CpuReader {
       const ProtoTranslationTable* table,
       LazyKernelSymbolizer* symbolizer,
       const std::optional<FtraceClockSnapshot>& clock_snapshot);
+
+  // Parses pages in |raw| with page_ts >= cutoff_ts into |trace_writer|, by
+  // gathering them into a contiguous buffer and reusing
+  // ProcessPagesForDataSource (so output matches steady-state parsing). Used
+  // when a snapshot trigger fires for a deferred-raw data source.
+  static void ParseRawRingBufferInto(
+      const RawFtraceRingBuffer* raw,
+      uint64_t cutoff_ts,
+      size_t page_size,
+      size_t cpu,
+      const FtraceDataSourceConfig* ds_config,
+      TraceWriter* trace_writer,
+      FtraceMetadata* metadata,
+      base::FlatSet<protos::pbzero::FtraceParseStatus>* parse_errors,
+      uint64_t* bundle_end_timestamp,
+      CompactSchedBuffer* compact_sched_buf,
+      const ProtoTranslationTable* table,
+      LazyKernelSymbolizer* symbolizer);
 
   // For FtraceController, which manages poll callbacks on per-cpu buffer fds.
   int RawBufferFd() const { return trace_fd_.get(); }

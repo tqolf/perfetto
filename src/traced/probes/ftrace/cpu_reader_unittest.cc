@@ -15,6 +15,7 @@
  */
 
 #include "src/traced/probes/ftrace/cpu_reader.h"
+#include "src/traced/probes/ftrace/raw_ftrace_ring_buffer.h"
 
 #include <string.h>
 #include <sys/stat.h>
@@ -1002,6 +1003,42 @@ static ExamplePage g_six_sched_switch{
     000001b0: 0000 0000 0000 0000 0000 0000 0000 0000  ................
     )",
 };
+
+TEST_F(CpuReaderParsePagePayloadTest, DeferredRawParseEquivalentToImmediate) {
+  // Stash a raw page into the ring buffer (the deferred-raw read path) and then
+  // parse it back out; the event count must match immediate parsing of the same
+  // page (see ParseSixSchedSwitch, which yields 6 events).
+  const ExamplePage* test_case = &g_six_sched_switch;
+  ProtoTranslationTable* table = GetTable(test_case->name);
+  auto page = PageFromXxd(test_case->data);
+
+  FtraceDataSourceConfig ds_config = EmptyConfig();
+  ds_config.event_filter.AddEnabledEvent(
+      table->EventToFtraceId(GroupAndName("sched", "sched_switch")));
+
+  const size_t page_size = base::GetSysPageSize();
+  const uint8_t* hdr_pos = page.get();
+  std::optional<CpuReader::PageHeader> page_header =
+      CpuReader::ParsePageHeader(&hdr_pos, table->page_header_size_len());
+  ASSERT_TRUE(page_header.has_value());
+
+  RawFtraceRingBuffer raw(/*capacity_pages=*/4, page_size);
+  raw.PushPage(page.get(), page_header->timestamp);
+
+  TraceWriterForTesting trace_writer;
+  base::FlatSet<protos::pbzero::FtraceParseStatus> parse_errors;
+  auto compact_sched_buf = std::make_unique<CompactSchedBuffer>();
+  uint64_t bundle_end_ts = 0;
+
+  CpuReader::ParseRawRingBufferInto(
+      &raw, /*cutoff_ts=*/0, page_size, /*cpu=*/0, &ds_config, &trace_writer,
+      &metadata_, &parse_errors, &bundle_end_ts, compact_sched_buf.get(), table,
+      /*symbolizer=*/nullptr);
+
+  protos::gen::FtraceEventBundle bundle =
+      trace_writer.GetOnlyTracePacket().ftrace_events();
+  EXPECT_EQ(bundle.event().size(), 6u);
+}
 
 TEST_F(CpuReaderParsePagePayloadTest, ParseSixSchedSwitch) {
   const ExamplePage* test_case = &g_six_sched_switch;

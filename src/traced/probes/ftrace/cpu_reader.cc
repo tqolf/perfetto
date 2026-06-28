@@ -33,6 +33,7 @@
 #include "src/traced/probes/ftrace/ftrace_config_muxer.h"
 #include "src/traced/probes/ftrace/ftrace_controller.h"  // FtraceClockSnapshot
 #include "src/traced/probes/ftrace/ftrace_data_source.h"
+#include "src/traced/probes/ftrace/raw_ftrace_ring_buffer.h"
 #include "src/traced/probes/ftrace/ftrace_print_filter.h"
 #include "src/traced/probes/ftrace/proto_translation_table.h"
 
@@ -355,9 +356,29 @@ size_t CpuReader::ReadAndProcessBatch(
     return pages_read;
 
   for (FtraceDataSource* data_source : started_data_sources) {
+    const FtraceDataSourceConfig* ds_config = data_source->parsing_config();
+    if (ds_config->deferred_raw_enabled) {
+      // Deferred-raw: stash the unparsed pages into the per-cpu ring buffer and
+      // skip parsing. They are parsed only when a snapshot trigger fires (see
+      // FtraceController), which keeps steady-state CPU low.
+      size_t cap_pages = std::max<size_t>(
+          1, (static_cast<size_t>(ds_config->deferred_raw_per_cpu_mem_limit_kb) *
+              1024) /
+                 sys_page_size);
+      RawFtraceRingBuffer* raw =
+          data_source->GetOrCreateRawRingBuffer(cpu_, cap_pages, sys_page_size);
+      for (size_t i = 0; i < pages_read; i++) {
+        const uint8_t* page = parsing_buf + i * sys_page_size;
+        const uint8_t* hdr_ptr = page;
+        std::optional<PageHeader> hdr =
+            ParsePageHeader(&hdr_ptr, table_->page_header_size_len());
+        raw->PushPage(page, hdr.has_value() ? hdr->timestamp : 0);
+      }
+      continue;
+    }
     ProcessPagesForDataSource(
         data_source->trace_writer(), data_source->mutable_metadata(), cpu_,
-        data_source->parsing_config(), data_source->mutable_parse_errors(),
+        ds_config, data_source->mutable_parse_errors(),
         data_source->mutable_bundle_end_timestamp(cpu_), parsing_buf,
         pages_read, compact_sched_buf, table_, symbolizer_, clock_snapshot);
   }
@@ -482,6 +503,36 @@ void CpuReader::Bundler::FinalizeAndRunSymbolizer() {
 // event bundle proto with a timestamp, letting the trace processor decide
 // whether to discard or keep the post-error data. Previously, we crashed as
 // soon as we encountered such an error.
+// static
+void CpuReader::ParseRawRingBufferInto(
+    const RawFtraceRingBuffer* raw,
+    uint64_t cutoff_ts,
+    size_t page_size,
+    size_t cpu,
+    const FtraceDataSourceConfig* ds_config,
+    TraceWriter* trace_writer,
+    FtraceMetadata* metadata,
+    base::FlatSet<protos::pbzero::FtraceParseStatus>* parse_errors,
+    uint64_t* bundle_end_timestamp,
+    CompactSchedBuffer* compact_sched_buf,
+    const ProtoTranslationTable* table,
+    LazyKernelSymbolizer* symbolizer) {
+  // Gather the qualifying pages into a contiguous buffer, then reuse the normal
+  // parse path so the output is identical to steady-state parsing.
+  std::vector<uint8_t> contiguous;
+  size_t pages = 0;
+  raw->ForEachPageSince(cutoff_ts, [&](const uint8_t* page, uint64_t) {
+    contiguous.insert(contiguous.end(), page, page + page_size);
+    pages++;
+  });
+  if (pages == 0)
+    return;
+  ProcessPagesForDataSource(trace_writer, metadata, cpu, ds_config, parse_errors,
+                            bundle_end_timestamp, contiguous.data(), pages,
+                            compact_sched_buf, table, symbolizer,
+                            /*clock_snapshot=*/std::nullopt);
+}
+
 // static
 bool CpuReader::ProcessPagesForDataSource(
     TraceWriter* trace_writer,

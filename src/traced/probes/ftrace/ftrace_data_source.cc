@@ -180,4 +180,17 @@ void FtraceDataSource::WriteStats() {
   }
 }
 
+RawFtraceRingBuffer* FtraceDataSource::GetOrCreateRawRingBuffer(
+    size_t cpu,
+    size_t capacity_pages,
+    size_t page_size) {
+  if (cpu >= raw_ring_buffers_.size())
+    raw_ring_buffers_.resize(cpu + 1);
+  if (!raw_ring_buffers_[cpu]) {
+    raw_ring_buffers_[cpu] =
+        std::make_unique<RawFtraceRingBuffer>(capacity_pages, page_size);
+  }
+  return raw_ring_buffers_[cpu].get();
+}
+
 }  // namespace perfetto

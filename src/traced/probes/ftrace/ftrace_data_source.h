@@ -28,6 +28,7 @@
 #include "src/traced/probes/ftrace/ftrace_config_utils.h"
 #include "src/traced/probes/ftrace/ftrace_metadata.h"
 #include "src/traced/probes/ftrace/ftrace_stats.h"
+#include "src/traced/probes/ftrace/raw_ftrace_ring_buffer.h"
 #include "src/traced/probes/probes_data_source.h"
 
 namespace perfetto {
@@ -91,6 +92,19 @@ class FtraceDataSource : public ProbesDataSource {
   }
   TraceWriter* trace_writer() { return writer_.get(); }
 
+  // Deferred-raw capture: lazily-created per-cpu raw page ring buffers. The
+  // ftrace read path stashes unparsed pages here; they are parsed only on a
+  // snapshot trigger (see FtraceController). Returns nullptr if |cpu| has no
+  // buffer yet.
+  RawFtraceRingBuffer* GetOrCreateRawRingBuffer(size_t cpu,
+                                                size_t capacity_pages,
+                                                size_t page_size);
+  RawFtraceRingBuffer* raw_ring_buffer(size_t cpu) const {
+    return cpu < raw_ring_buffers_.size() ? raw_ring_buffers_[cpu].get()
+                                          : nullptr;
+  }
+  size_t num_raw_ring_buffers() const { return raw_ring_buffers_.size(); }
+
   uint64_t* mutable_bundle_end_timestamp(size_t cpu) {
     if (cpu >= bundle_end_ts_by_cpu_.size())
       bundle_end_ts_by_cpu_.resize(cpu + 1);
@@ -115,6 +129,8 @@ class FtraceDataSource : public ProbesDataSource {
   // -- Fields initialized by the Initialize() call:
   FtraceConfigId config_id_ = 0;
   std::unique_ptr<TraceWriter> writer_;
+  // Per-cpu deferred-raw page buffers (empty unless deferred_raw_enabled).
+  std::vector<std::unique_ptr<RawFtraceRingBuffer>> raw_ring_buffers_;
   base::WeakPtr<FtraceController> controller_weak_;
   // Muxer-held state for parsing ftrace according to this data source's
   // configuration. Not the raw FtraceConfig proto (held by |config_|).
