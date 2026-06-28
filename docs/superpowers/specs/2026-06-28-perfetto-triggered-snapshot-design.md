@@ -236,6 +236,18 @@ watchdog_posix.cc: Memory window of 358 MB is above the 34 MB limit.
 - 要支持大 N，必须：(a) 调高 `traced_probes` 内存护栏上限，或 (b) 用磁盘溢出环形段（阶段 2），或 (c) 用 §16 的进程过滤大幅压低事件量。
 - 进程过滤（§16）是这里的关键杠杆：过滤后事件量小一两个数量级，相同内存能保留长得多的 N。
 
+### 触发侧 e2e 实测（CLONE_SNAPSHOT 全链路）
+在同一真机上，用 `test/configs/triggered_snapshot_deferred.cfg`（deferred-raw + `CLONE_SNAPSHOT` 触发）跑完整链路：启动会话 → 攒 6s deferred 页 → 用 `activate_triggers: "snap"` 发触发 → 内核 clone flush。结果：
+
+| 场景 | 快照输出 |
+|---|---|
+| 无触发 | ~11 KB（空，页只缓存未解析） |
+| **发触发后** | **`*.0` 快照 2.25 MB**，含 **247,837 条 ftrace 事件**（sched_switch 167,073 + sched_waking 80,764），trace_processor 正确解析为 167,073 个 sched_slice |
+
+证明触发侧全链路工作：`ProbesProducer::Flush(kTraceClone)` → `FtraceDataSource::OnFtraceFlushComplete` → `FtraceController::ParseDeferredRawForClone` 解析 per-cpu raw buffer → 数据进 SMB → 被 clone 落盘。这是之前唯一无法单测的路径，现真机端到端验证通过。
+
+注：触发由含 `activate_triggers: "snap"` 的配置发送（`perfetto -c trig.cfg`），**不是** `--trigger`（该选项不存在）；CLONE_SNAPSHOT 快照写到 `-o` 路径加计数后缀（`file.0`、`file.1`…）。
+
 ## 16. 进程级事件过滤（可选，可动态增删）
 
 ### 动机
