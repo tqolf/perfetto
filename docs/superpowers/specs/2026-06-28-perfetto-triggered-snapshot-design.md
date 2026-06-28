@@ -281,3 +281,51 @@ watchdog_posix.cc: Memory window of 358 MB is above the 34 MB limit.
 - 动态控制入口选 (A) 还是别的形式；
 - `event-fork` 同时影响 function tracer 的 `function-fork`，需确认只动 event 过滤；
 - sched_switch 这类涉及 prev/next 两个任务的事件，内核 `set_event_pid` 的语义（通常 prev 或 next 命中即记录），需在真机确认过滤后仍能拿到关心进程的完整切换上下文。
+
+### 控制入口与 HTTP
+控制文件天然适合后接 HTTP/gRPC：它把"机制"和"接口"解耦。traced_probes 只认一个控制文件（如 `/run/perfetto/ftrace_pid_filter`），内容变化即重算 TID 并重写 `set_event_pid`；HTTP 服务只是薄壳（`PUT /filter` → 写文件），可作为独立进程、不与 traced_probes 耦合。控制协议建议**行式**（每行一个 PID，或 `+1234`/`-1234` 增删），便于 HTTP 转发与 `echo >>` 手动调试。机器人单机部署，HTTP 服务与 traced_probes 共享文件系统，无跨主机问题。
+
+## 17. 触发检测架构（标准 + 业务自定义）
+
+整套方案服务于**机器人稳定性排查**：在机器人出现不稳定的瞬间抓到现场。难点在"如何检测那一刻"，且要同时支持标准信号与业务自定义。设计原则：**不让检测器去理解所有"不稳定"，而是把"发触发"做成谁都能用的统一契约**。
+
+### 核心：trigger 是"沙漏的腰"
+```
+   多种检测器(上半)              统一契约              一套快照机制(下半)
+ 标准: PSI/loadavg/sched 延迟  ─┐
+ OOM/watchdog/关键进程死亡      ├──► 具名 trigger "snap" ──► deferred-raw + CLONE_SNAPSHOT
+ 业务自定义信号                ─┘    (不关心谁/为什么触发)    → 前N秒 + 后M秒快照
+```
+快照机制完全不关心触发来源。标准与自定义天然共存，因为都收敛到同一个具名 trigger。
+
+### 标准检测器（开箱即用）
+一个轻量 watcher 守护进程，配置驱动一组内置检测器，越阈值即 `ActivateTriggers("snap")`：
+- `psi`：cpu/io/memory 压力（读 `/proc/pressure/*`，如 `full avg10 > 阈值`）
+- `loadavg`：`/proc/loadavg` 越阈值
+- `sched_latency`：关键线程 runnable-但-未运行 时间过长（被抢占太久）
+- `proc_exit`：关键进程死亡
+- `oom`：OOM（`/proc` 或内核事件）
+每个检测器带 `debounce_ms` 防抖。内置这些是因为它们是机器人不稳定的通用信号，业务无需自己写。
+
+### 业务自定义（两种接入，丰俭由人）
+- **模式 A — 业务自己判定，直接发 trigger（最直接）**：业务已知道自己出问题，直接发触发，不经过 watcher。
+  - 进程内：Perfetto SDK `Tracing::ActivateTriggers({"snap"})`（一行）
+  - 脚本/其它进程：`perfetto -c trig.cfg`（或一个 `snap-trigger` 小工具）
+- **模式 B — 业务只上报指标，watcher 做阈值/防抖**：业务把自定义指标推给 watcher 的通用输入（与 §16 控制文件同款思路，HTTP-ready）：
+  - `{ type: external, source: "/run/perfetto/signals", rule: "value>X for 3s" }`
+  - 业务往文件/管道/socket/HTTP 写指标，watcher 统一套阈值 + 防抖。
+
+### 两个增强点
+1. **具名 trigger → 每类问题不同抓取档案**：卡顿用 `snap_hang`、OOM 用 `snap_oom`，各自配不同 N/M 与事件集（卡顿要详细 sched，OOM 要内存事件）。标准/自定义信号映射到不同 trigger 名即可。
+2. **限流原生支持**：`TriggerConfig.triggers` 的 `max_per_24_h`、`skip_probability` 已能防"同一问题狂发触发淹没系统"。
+
+### 结论：watcher 可以很小
+业务自定义大多走**模式 A（直接发 trigger）**，watcher 只需提供少数标准系统检测器 + 一个通用 external 输入，不必做成"什么都懂"的大家伙。
+
+### 实施建议
+- **17.1**：`snap-trigger` 小工具 + SDK 用法示例（模式 A，近零成本）。
+- **17.2**：最小 watcher（2~3 个标准检测器：psi/loadavg/proc_exit + external 通用输入），配置驱动 + 防抖 + 复用原生 `max_per_24_h` 限流。
+
+### 待确认
+- 标准检测器首批落地哪几个（建议 psi + loadavg + proc_exit）；
+- 机器人"不稳定"的具体可观测信号（卡顿/重启/实时性丢失/业务指标），用以校准 sched_latency 等检测器的阈值与语义——这一项需业务侧进一步明确。
