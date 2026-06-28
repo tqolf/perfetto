@@ -86,40 +86,47 @@
 RawFtraceRingBuffer (per-cpu)
  ├─ 内存段:        固定上限 per_cpu_mem_limit_kb, 环形, 存【完整 ftrace page】(含 page header)
  └─ 磁盘溢出段(可选): mmap 固定大小环形文件, 仅当内存段满且配置了大 N 时启用, 满则丢最旧
-裁剪单位 = 一个 ftrace page; 每页以"页内最后一个事件 ts"作为页时间戳;
-触发时按 [T-N, T+M] 丢弃更旧的页, 保留最近 N 秒(+ 续录的 M 秒)。
+裁剪单位 = 一个 ftrace page; 每页以 PageHeader.timestamp(页基准时间戳, ≈页内首个事件 ts)为页时间戳;
+触发时按 cutoff 丢弃更旧的页。窗口长度 = N+M(见 §6.3 off-by-M 修正), 容量须按 N+M 秒配。
 ```
 
 存**整页（含 page header）**而非单事件，是为了触发时能直接复用现有解析路径 `CpuReader::ParsePagePayload`，不重写解析器。
 
 ### 6.2 改造注入点（精确到代码）
 
-- 注入位置：`CpuReader::ReadAndProcessBatch`（`src/traced/probes/ftrace/cpu_reader.cc:269`）。该函数内 read 循环（`:283` 起）把最多 `kFtraceDataBufSizePages=32` 个原始页读入 `parsing_buf`，之后（`:358`）才调 `ProcessPagesForDataSource` 解析。
-- 改造：若该 data source 标记为 **deferred-raw 模式**，在 read 循环之后、`ProcessPagesForDataSource` 之前插入分支——把 `parsing_buf` 内刚读到的 `pages_read` 个原始页 `memcpy` 进该 cpu 的 `RawFtraceRingBuffer`，然后 **return**，跳过解析。
+- 注入位置：`CpuReader::ReadAndProcessBatch`（`src/traced/probes/ftrace/cpu_reader.cc:269`）。该函数内 read 循环（`:283` 起）把最多 `kFtraceDataBufSizePages=32` 个原始页读入 `parsing_buf`，之后（`:357`）才对每个 data source 调 `ProcessPagesForDataSource` 解析。
+- 改造：若该 data source 标记为 **deferred-raw 模式**，在 read 循环之后、解析循环里插入分支——把 `parsing_buf` 内刚读到的 `pages_read` 个原始页 `memcpy` 进 `data_source->raw_ring_buffer(cpu_)`（页时间戳取 `ParsePageHeader` 的 `PageHeader.timestamp`），然后 `continue` 跳过该源解析。
 - 效果：常驻 CPU 从"read + parse + 写 SMB"降到"read + memcpy"。
+- raw buffer **挂在 `FtraceDataSource`**（每 CPU 一个），push 由 `CpuReader` 完成。无需加锁：ftrace 读与 flush 都在 traced_probes 同一 task runner 线程。
 
 > 复用提示：`FrozenFtraceDataSource` / `CpuReader::ReadFrozen`（`cpu_reader.cc:1175`）已实现"从内核现存 ring buffer 事后读出并解析"，触发时解析逻辑可参考其对 `ParsePagePayload` 的调用方式。
 
-### 6.3 触发时解析——挂在原生 CLONE flush 上
+### 6.3 触发时解析——挂在原生 CLONE flush 上（含审查修正）
 
-复用原生 `CLONE_SNAPSHOT` 的整条链路，只在一个点插入逻辑：
+复用原生 `CLONE_SNAPSHOT` 链路，但代码审查暴露 4 处必须修正的点：
+
+1. **解析入口在 `FtraceController` 而非 `FtraceDataSource`**。解析必须有 `ProtoTranslationTable` 与 `LazyKernelSymbolizer`，二者归 controller/muxer 持有，`FtraceDataSource` **不持有**。flush 本就经 `controller_weak_` 走到 controller，由它拿 `table_`/`symbolizer_` 遍历各源 per-cpu raw buffer 解析。
+2. **窗口是 N+M 不是 N（off-by-M）**。clone 在触发 **+M 秒**后发生（`stop_delay_ms`），解析时刻 `now=触发+M`。覆盖 `[触发-N, 触发+M]` 须 `cutoff = now - (retain_seconds + stop_delay_ms/1000)`；buffer 容量按 **N+M** 配。
+3. **时钟域守卫**。`cutoff` 用 `base::GetBootTimeNs()`，仅当 `trace_clock=boot`（`ftrace_clock==FTRACE_CLOCK_UNSPECIFIED`）时与页 `timestamp` 同域。非 boot（global/local 或 mono_raw）时跳过时间裁剪（全量解析）或用 `FtraceClockSnapshot` 换算。
+4. **flush 时序**。controller 在 clone-flush 回调里须 **先 parse 写满各 cpu TraceWriter → 再 commit/flush → 再 ack**；ack 必须晚于解析数据全部 commit，否则 service 克隆到半份。
 
 ```
 trigger 到达 service
   → PostDelayedTask(stop_delay_ms = M*1000)            [tracing_service_impl.cc:2002, 原生]
-  → M 秒后(其间 B 仍在 memcpy 新页) NotifyCloneSnapshotTrigger
+  → M 秒后(其间 raw buffer 仍在 memcpy 新页) NotifyCloneSnapshotTrigger
   → clone client 连接 → FlushAndCloneSession           [tracing_service_impl.cc:4436, 原生]
-  → 给 traced_probes 发 Reason::kTraceClone flush       [tracing_service_impl.cc:4601, 原生]
-  → 【新增】FtraceDataSource 在该 flush 回调里:
-        把 RawFtraceRingBuffer 内 [T-N, now] 的原始页
-        逐页 ParsePagePayload → 写进 TraceWriter(SMB)
-  → flush ack → service 克隆 buffer → 落盘               [原生]
+  → 给 traced_probes 发 Reason::kTraceClone flush       [tracing_service_impl.cc:4602, 原生]
+  → ProbesProducer::Flush 识别 kTraceClone, 转交 FtraceController:
+       cutoff = GetBootTimeNs() - (N+M)秒  (非 boot 时钟则不裁剪)
+       for cpu: 用 table_/symbolizer_ 把 raw buffer 内 ts>=cutoff 的页
+                逐页 ParsePagePayload → 写进该源 TraceWriter(SMB)
+       commit/flush writer → 之后才 ack
+  → flush ack → service 克隆 service buffer → 落盘       [原生]
 ```
 
-优雅之处：M 秒延迟、clone、落盘全部是原生流程；改造只在 `traced_probes` 的 flush 处理里插入"raw → parse → SMB"。后 M 秒天然由 `stop_delay_ms` 覆盖（这期间 raw buffer 继续收新页），前 N 秒由环形 buffer 保留。
-
-- `traced_probes` 收 clone flush 的入口：`ProbesProducer::Flush`（`src/traced/probes/probes_producer.cc:641`），可据 `FlushFlags::Reason::kTraceClone` 区分 clone。
-- 解析峰值需**分块 + 让出 CPU**（见 §10 风险 1）。
+- 收 clone flush 入口：`ProbesProducer::Flush`（`probes_producer.cc:641`，第 4 参 `FlushFlags` 当前匿名，需命名并读 `flush_flags.reason()`）。识别 `FtraceDataSource` 用 `descriptor == &FtraceDataSource::descriptor` 后 `static_cast`（`probes_producer.cc:804` 先例），不改基类。
+- 解析峰值需**分块 + 让出 CPU**（见 §12 风险 1）。
+- ⚠️ **容量匹配（§12 风险 5）**：解析后 protobuf 仍经 SMB→service buffer 才被克隆落盘，故 service buffer 须能容纳 N+M 秒解析量，否则环形覆盖丢数据；常驻内存省了，触发瞬间峰值不省。
 
 ## 7. 通路 A / C 设计
 
@@ -147,6 +154,7 @@ trigger 到达 service
   }
   ```
 - 触发沿用现有 `TriggerConfig{ mode=CLONE_SNAPSHOT, triggers[].stop_delay_ms = M*1000 }`，零新增字段。
+- ⚠️ **muxer 接线（审查修正）**：`FtraceDataSourceConfig`（`ftrace_config_muxer.h:50`）**不是 POD**——它有显式全参构造函数 + 初始化列表、部分成员 `const`、无默认值。新增 3 个字段须同步改：构造函数签名、初始化列表、成员声明三处；并在 `ftrace_config_muxer.cc:697` 的 `emplace(piecewise_construct, forward_as_tuple(...))` 末尾按序追加 3 个实参（值在 emplace 前从 `request`，即 proto 参数名，解析）。不能"先构造再赋值"。
 
 ## 10. CPU / IO / 内存管控
 
@@ -154,23 +162,27 @@ trigger 到达 service
 |---|---|---|---|
 | CPU | 仅 read + memcpy（省掉 parse） | 一次性解析 N 秒，**分块 + yield 限速** | `drain_period_ms` / `drain_buffer_percent` / 解析块大小 |
 | IO | 0（小 N）；仅内存段满才顺序写 raw（大 N） | 落盘一次 | `per_cpu_mem_limit_kb` / `disk_overflow_path` 开关 |
-| 内存 | raw 环形 buffer，硬上限，溢出丢最旧 | 解析时临时 protobuf | `per_cpu_mem_limit_kb` / `disk_limit_mb` |
+| 内存 | raw 环形 buffer，硬上限，溢出丢最旧 | 解析 protobuf + **service buffer** 容纳整份 | `per_cpu_mem_limit_kb` / `disk_limit_mb` / service `buffer.size_kb` |
 
 内核侧：`traced_probes` 仍需按 tick `read()` per-cpu pipe，read 频率不能太低，否则内核 per-cpu buffer（`buffer_size_kb`，默认低内存 2MB / 高内存 8MB 每 CPU）先溢出丢数据。
+
+> ⚠️ **峰值内存（审查修正）**：触发时解析出的 protobuf 要经 SMB→service buffer 才被克隆落盘，故 service `buffer.size_kb` 须能容纳 N+M 秒解析量。**常驻内存省了**（raw 比 protobuf 紧凑、service buffer 常驻几乎空），但**触发瞬间峰值并不省**，还多一份 service buffer。若内存紧张，备选是改走 `write_into_file` 流式落盘（偏离 CLONE_SNAPSHOT 模型，需另设计）。
 
 ## 11. 关键改造点清单
 
 | 区域 | 文件:行 | 改动 |
 |---|---|---|
-| raw 旁路注入 | `src/traced/probes/ftrace/cpu_reader.cc:269`（read 后 / `:358` parse 前） | deferred-raw 分支：memcpy 整页进 RawFtraceRingBuffer 后 return |
-| raw 缓冲类（新增） | `src/traced/probes/ftrace/`（新文件） | `RawFtraceRingBuffer`：内存段 + 可选磁盘溢出环形 |
-| 触发时解析 | `src/traced/probes/probes_producer.cc:641` / ftrace data source | clone flush 回调里把 raw 页 `ParsePagePayload` 写入 SMB |
-| 解析复用 | `src/traced/probes/ftrace/cpu_reader.cc`（`ParsePagePayload` / 参考 `ReadFrozen:1175`） | 事后解析整页 |
-| 配置 | `protos/perfetto/config/ftrace/ftrace_config.proto` | 新增 `DeferredRawCapture` |
+| raw 旁路注入 | `cpu_reader.cc:357`（解析循环内） | deferred-raw 分支：memcpy 整页进 `data_source->raw_ring_buffer(cpu_)` 后 `continue` |
+| raw 缓冲类（新增） | `src/traced/probes/ftrace/raw_ftrace_ring_buffer.{h,cc}`（新文件） | `RawFtraceRingBuffer`：内存段 + 可选磁盘溢出环形 |
+| raw buffer 归属 | `ftrace_data_source.{h,cc}` | `FtraceDataSource` 持每 cpu `RawFtraceRingBuffer` + 访问器 |
+| 触发时解析（入口） | `FtraceController`（持 `table_`/`symbolizer_`/`cpu_readers`） | clone-flush 时遍历各源 raw buffer，`ParsePagePayload` 写 SMB；**不在 FtraceDataSource**（它无 table/symbolizer） |
+| clone 识别 | `probes_producer.cc:641`（命名第4参 `FlushFlags`）+ `:804` 式 `descriptor` 判别 | `reason()==kTraceClone` 时转交 controller |
+| 解析复用 | `cpu_reader.cc`（`ParsePagePayload`，`table->generic_evt_pb_descriptors()`；参考 `ReadFrozen:1175`） | 事后解析整页；generic descriptors 取自 **table** 非 ds_config |
+| 配置 | `protos/perfetto/config/ftrace/ftrace_config.proto`（字段 38）+ `ftrace_config_muxer.{h,cc}` | 新增 `DeferredRawCapture` + 构造函数三处接线 |
 | 通路 C concat | `src/perfetto_cmd/perfetto_cmd.cc`（snapshot 落盘附近，参考 `OnSessionCloned` ~`:1431`） | 第二会话输出 concat 入主快照 |
 | watcher（新增） | 新工具 | 读 PSI/loadavg 越阈值发 trigger |
 
-> 注：触发、CLONE、stop_delay、clock snapshot 均复用原生，无需改 `tracing_service_impl.cc` 的核心逻辑。
+> 注：触发、CLONE、stop_delay、clock snapshot 均复用原生，无需改 `tracing_service_impl.cc` 的核心逻辑。改动集中在 `traced_probes` 侧（ftrace controller / data source / cpu_reader / muxer / proto）。
 
 ## 12. 风险与缓解
 
@@ -178,7 +190,12 @@ trigger 到达 service
 2. **ftrace format 描述符一致性**：触发时解析依赖常驻期已 setup 的 event format。→ deferred-raw 期间禁止对该 data source 重配；format 随会话固定。
 3. **内核 pipe 及时 drain**：read 频率过低 → 内核 buffer 先溢出。→ memcpy 很快，保持默认/合理 `drain_period_ms`；可用 `drain_buffer_percent` watermark。
 4. **incremental state**：通路 A 的 SDK interned data 跨 snapshot 自解码依赖周期性 `ClearIncrementalState`（原生 `CLONE_SNAPSHOT` 已有考量），沿用即可；B 的 ftrace 事件自包含，无此问题。
-5. **大 N 内存物理上限**：纯内存装不下几分钟全量。→ 由"内存为主 + 磁盘溢出环形"承接；并对外明确 N 与内存/磁盘上限的换算关系。
+5. **触发峰值 service buffer 容量**（审查新增）：解析后 protobuf 经 SMB→service buffer 才被克隆，service `buffer.size_kb` 须容纳 N+M 秒解析量，否则环形覆盖丢数据。→ 按 N+M 解析量配 service buffer；或改 `write_into_file` 流式落盘（另设计）。
+6. **解析入口需 table/symbolizer**（审查新增）：`FtraceDataSource` 不持有 `ProtoTranslationTable`/`LazyKernelSymbolizer`，触发解析入口必须在 `FtraceController`，否则编译失败。
+7. **off-by-M 窗口**（审查新增）：clone 在触发 +M 秒后，`cutoff = now-(N+M秒)`，buffer 容量按 N+M。
+8. **时钟域**（审查新增）：`cutoff` 用 boottime，仅 `trace_clock=boot` 时与页 timestamp 同域；非 boot 须跳过时间裁剪或用 `FtraceClockSnapshot` 换算。
+9. **flush 时序**（审查新增）：controller 须 parse→commit→ack 严格有序，ack 晚于数据 commit，否则克隆半份。
+10. **大 N 内存物理上限**：纯内存装不下几分钟全量。→ "内存为主 + 磁盘溢出环形"承接；明确 N 与内存/磁盘上限换算。
 
 ## 13. 测试策略
 
@@ -194,3 +211,53 @@ trigger 到达 service
 3. **阶段 2**：磁盘溢出环形段，支持大 N。
 4. **阶段 3**：通路 C 动态源 + concat 合并；watcher 进程。
 5. **阶段 4**：解析限速、参数化压测、上限校验。
+
+## 15. 实测验证结果（本机真机压测）
+
+在内核 6.8 + 真实 tracefs 的 128 核机器上，跑完整 `traced`/`traced_probes`/`perfetto` 栈，相同 fork/syscall 负载（sched + raw_syscalls 事件），30s 窗口，同一 traced_probes 实例背靠背对比：
+
+| 模式 | traced_probes 常驻 CPU% | trace 输出 |
+|---|---|---|
+| 立即解析（baseline） | **~39%** | 67 MB（全量解析落盘） |
+| deferred-raw（无触发） | **~8%** | ~11 KB（页缓存，未解析/未落盘） |
+
+- **常驻 CPU 降约 80%**，残留 ~8% 为 `read()`+`memcpy`+poll 搬运开销（已无解析）。这是"降 CPU"核心命题的实测证据。
+- deferred 无触发时 trace ≈ 空（11 KB vs 67 MB），系统级证实页只缓存不解析。
+
+### ⚠️ 实测发现的硬约束：内存护栏
+首次用 `per_cpu_mem_limit_kb=8192`（8 MB）时，**traced_probes 被 Perfetto 内置内存看门狗杀掉**：
+```
+watchdog_posix.cc: Memory window of 358 MB is above the 34 MB limit.
+```
+8 MB × 实际分配 raw buffer 的 ~44 个 CPU ≈ 358 MB，远超 traced_probes 默认 ~32 MB 护栏。降到 256 KB/cpu（总 ≤ 32 MB）后正常。
+
+**硬约束**：`per_cpu_mem_limit_kb × num_cpus` 必须 ≤ traced_probes 内存护栏（默认 ~32 MB），否则进程被杀。推论：
+- 核数越多，每核 buffer 必须越小（128 核 → 每核仅 ~256 KB）→ 内存段能保留的"前 N 秒"很短。
+- 要支持大 N，必须：(a) 调高 `traced_probes` 内存护栏上限，或 (b) 用磁盘溢出环形段（阶段 2），或 (c) 用 §16 的进程过滤大幅压低事件量。
+- 进程过滤（§16）是这里的关键杠杆：过滤后事件量小一两个数量级，相同内存能保留长得多的 N。
+
+## 16. 进程级事件过滤（可选，可动态增删）
+
+### 动机
+很多场景只关心**部分进程**的事件。在内核 ftrace **写入 ring buffer 之前**就按 PID 丢弃无关事件，是最高效的过滤——同时省 CPU（不写、不读、不解析）、IO、内存，且与 deferred-raw 叠加：过滤后缓存的 raw 页更少，相同 `per_cpu_mem_limit_kb` 能覆盖长得多的 N。
+
+### 现状（Perfetto 已有，但不够）
+- `FtraceConfig.tids_to_trace`（字段 35）→ `Tracefs::SetEventTidFilter` 写入 tracefs `set_event_pid`（`tracefs.cc:285`）。内核据此只记录这些 **TID** 的事件。
+- 局限：**(1) TID 级**（用户通常按进程 PID 思考，一个进程多线程要逐个列）；**(2) 不跟随**新线程/子进程（没设 `event-fork` 选项）；**(3) 静态**，会话启动时设定，不能中途增删。
+
+### 设计增量
+1. **进程级（PID → TID 展开）**：新增配置 `pids_to_trace`（进程粒度）。setup 时对每个 PID 读 `/proc/<pid>/task/` 得到全部 TID，与 `tids_to_trace` 求并集后写 `set_event_pid`。
+2. **跟随新线程/子进程**：启用内核 tracefs 选项 `options/event-fork`。开启后内核在 fork 时**自动**把被过滤任务的子任务加入 `set_event_pid`——新线程、子进程原生覆盖，无需轮询 `/proc`。这是关键，使过滤集"自我维护"。
+3. **动态增删**：`set_event_pid` 内核文件支持运行时重写。traced_probes 侧维护"目标 PID 集合"，提供一个控制入口，在变更时重新展开 TID 并重写 `set_event_pid`（配合 `event-fork`，通常只需增删"根进程"，其后代由内核自动跟随）。控制入口候选：
+   - **(A) 控制文件 watch（推荐）**：traced_probes 监视一个控制路径（如 `/run/perfetto/ftrace_pid_filter`），内容变化即重算并重写。简单、与 Perfetto 会话生命周期解耦、易脚本化。
+   - (B) 复用 trigger：trigger 不易携带 PID 负载，不合适。
+   - (C) 外部特权 helper 直接写 `set_event_pid`：最简，但绕过 Perfetto，与 muxer 在 teardown 时 `ClearEventTidFilter` 冲突，多会话下有竞争——不推荐。
+
+### 与本方案的关系
+- 纯配置层面，`tids_to_trace` 现在就能用（静态 TID 过滤）；**进程级 + event-fork + 动态**是新增改造，集中在 muxer / tracefs / 一个控制 watch。
+- 与 deferred-raw 正交且互补：先内核过滤（降事件量）→ 再 deferred 缓存（降解析）。两者叠加对 CPU/IO/内存三者都最优。
+
+### 待确认（实现前）
+- 动态控制入口选 (A) 还是别的形式；
+- `event-fork` 同时影响 function tracer 的 `function-fork`，需确认只动 event 过滤；
+- sched_switch 这类涉及 prev/next 两个任务的事件，内核 `set_event_pid` 的语义（通常 prev 或 next 命中即记录），需在真机确认过滤后仍能拿到关心进程的完整切换上下文。
