@@ -23,6 +23,7 @@
 
 #include "perfetto/base/logging.h"
 #include "perfetto/ext/base/file_utils.h"
+#include "perfetto/ext/base/utils.h"
 
 namespace perfetto {
 
@@ -45,20 +46,34 @@ bool RawFtraceRingBuffer::EnableDiskOverflow(const std::string& path,
   base::ScopedFile fd = base::OpenFile(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
   if (!fd)
     return false;
-  if (ftruncate(*fd, static_cast<off_t>(disk_capacity_pages * page_size_)) != 0)
+  if (ftruncate(*fd, static_cast<off_t>(disk_capacity_pages) *
+                         static_cast<off_t>(page_size_)) != 0)
     return false;
+  // Open-then-unlink: the file is never reopened (this object owns the only
+  // fd), so unlinking now prevents leaking the raw-data file on disk and lets
+  // the kernel reclaim it automatically on close/exit.
+  unlink(path.c_str());
   disk_fd_ = std::move(fd);
   disk_capacity_pages_ = disk_capacity_pages;
   disk_page_ts_.assign(disk_capacity_pages, 0);
   disk_head_ = 0;
   disk_count_ = 0;
+  disk_ok_ = true;
   return true;
 }
 
 void RawFtraceRingBuffer::DiskPush(const uint8_t* page, uint64_t page_ts) {
-  ssize_t w = pwrite(*disk_fd_, page, page_size_,
-                     static_cast<off_t>(disk_head_ * page_size_));
-  PERFETTO_CHECK(w == static_cast<ssize_t>(page_size_));
+  off_t offset =
+      static_cast<off_t>(disk_head_) * static_cast<off_t>(page_size_);
+  ssize_t w = PERFETTO_EINTR(pwrite(*disk_fd_, page, page_size_, offset));
+  if (w != static_cast<ssize_t>(page_size_)) {
+    // Disk full / IO error: degrade to memory-only instead of crashing the
+    // daemon (disk-full is an expected condition for an overflow feature).
+    PERFETTO_PLOG(
+        "deferred-raw: disk spill write failed, disabling disk overflow");
+    disk_ok_ = false;
+    return;
+  }
   disk_page_ts_[disk_head_] = page_ts;
   disk_head_ = (disk_head_ + 1) % disk_capacity_pages_;
   if (disk_count_ < disk_capacity_pages_)
@@ -90,9 +105,13 @@ void RawFtraceRingBuffer::ForEachPageSince(
       size_t slot = (disk_oldest + i) % disk_capacity_pages_;
       if (disk_page_ts_[slot] < cutoff_ts)
         continue;
-      ssize_t r = pread(*disk_fd_, scratch.data(), page_size_,
-                        static_cast<off_t>(slot * page_size_));
-      PERFETTO_CHECK(r == static_cast<ssize_t>(page_size_));
+      off_t offset = static_cast<off_t>(slot) * static_cast<off_t>(page_size_);
+      ssize_t r =
+          PERFETTO_EINTR(pread(*disk_fd_, scratch.data(), page_size_, offset));
+      if (r != static_cast<ssize_t>(page_size_)) {
+        PERFETTO_PLOG("deferred-raw: disk read-back failed, skipping page");
+        continue;  // Skip the unreadable page rather than crash.
+      }
       fn(scratch.data(), disk_page_ts_[slot]);
     }
   }

@@ -76,7 +76,7 @@ class RawFtraceRingBuffer {
   uint8_t* SlotDataMut(size_t slot) {
     return reinterpret_cast<uint8_t*>(storage_.Get()) + slot * page_size_;
   }
-  bool disk_enabled() const { return disk_capacity_pages_ > 0; }
+  bool disk_enabled() const { return disk_capacity_pages_ > 0 && disk_ok_; }
   // Appends one page to the on-disk overflow ring (dropping its oldest if
   // full).
   void DiskPush(const uint8_t* page, uint64_t page_ts);
@@ -94,6 +94,9 @@ class RawFtraceRingBuffer {
   std::vector<uint64_t> disk_page_ts_;  // size disk_capacity_pages_.
   size_t disk_head_ = 0;
   size_t disk_count_ = 0;
+  // Cleared if a disk IO error occurs; further spilling is disabled and the
+  // buffer degrades to memory-only rather than crashing the daemon.
+  bool disk_ok_ = true;
 };
 
 }  // namespace perfetto

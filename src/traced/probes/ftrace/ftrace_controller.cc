@@ -520,7 +520,6 @@ void FtraceController::ParseDeferredRawForClone(FtraceDataSource* target_ds) {
   const FtraceDataSourceConfig* ds_config = target_ds->parsing_config();
   if (!ds_config || !ds_config->deferred_raw_enabled)
     return;
-  const size_t page_size = base::GetSysPageSize();
   ForEachInstance([&](FtraceInstanceState* instance) {
     for (FtraceDataSource* ds : instance->started_data_sources) {
       if (ds != target_ds)
@@ -534,7 +533,7 @@ void FtraceController::ParseDeferredRawForClone(FtraceDataSource* target_ds) {
           continue;
         CompactSchedBuffer compact_sched_buf;
         CpuReader::ParseRawRingBufferInto(
-            raw, /*cutoff_ts=*/0, page_size, cpu, ds_config, ds->trace_writer(),
+            raw, /*cutoff_ts=*/0, cpu, ds_config, ds->trace_writer(),
             ds->mutable_metadata(), ds->mutable_parse_errors(),
             ds->mutable_bundle_end_timestamp(cpu), &compact_sched_buf, table,
             &symbolizer_);
@@ -639,6 +638,10 @@ bool FtraceController::AddDataSource(FtraceDataSource* data_source) {
         },
         /*poll_period_ms=*/1000);
     pid_filter_watcher_->Start();
+    // Bind the watcher's lifetime to THIS data source (and thus this instance's
+    // tracefs, captured above). It must be torn down when this data source is
+    // removed, before the instance — and its tracefs — can be destroyed.
+    pid_filter_watcher_owner_ = data_source;
   }
 
   const FtraceDataSourceConfig* ds_config =
@@ -687,10 +690,14 @@ void FtraceController::RemoveDataSource(FtraceDataSource* data_source) {
   if (!removed)
     return;  // can happen if AddDataSource failed
 
-  // Tear down the dynamic pid-filter watcher once no data sources remain (it
-  // captures the instance tracefs, which must outlive it).
-  if (data_sources_.empty())
+  // Tear down the dynamic pid-filter watcher when its owning data source is
+  // removed — before StopIfNeeded() below can destroy the instance whose
+  // tracefs the watcher captured (otherwise the poll task would
+  // use-after-free).
+  if (data_source == pid_filter_watcher_owner_) {
     pid_filter_watcher_.reset();
+    pid_filter_watcher_owner_ = nullptr;
+  }
 
   FtraceInstanceState* instance =
       GetOrCreateInstance(data_source->config().instance_name());

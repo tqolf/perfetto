@@ -508,7 +508,6 @@ void CpuReader::Bundler::FinalizeAndRunSymbolizer() {
 void CpuReader::ParseRawRingBufferInto(
     const RawFtraceRingBuffer* raw,
     uint64_t cutoff_ts,
-    size_t page_size,
     size_t cpu,
     const FtraceDataSourceConfig* ds_config,
     TraceWriter* trace_writer,
@@ -518,21 +517,29 @@ void CpuReader::ParseRawRingBufferInto(
     CompactSchedBuffer* compact_sched_buf,
     const ProtoTranslationTable* table,
     LazyKernelSymbolizer* symbolizer) {
-  // Gather the qualifying pages into a contiguous buffer, then reuse the normal
-  // parse path so the output is identical to steady-state parsing.
-  std::vector<uint8_t> contiguous;
-  size_t pages = 0;
+  // Parse in fixed-size batches so peak memory stays bounded regardless of the
+  // retained window (especially with disk overflow), reusing the normal parse
+  // path for output identical to steady-state parsing.
+  const uint32_t sys_page_size = base::GetSysPageSize();
+  constexpr size_t kBatchPages = 32;
+  std::vector<uint8_t> batch(kBatchPages * sys_page_size);
+  size_t pages_in_batch = 0;
+  auto flush_batch = [&] {
+    if (pages_in_batch == 0)
+      return;
+    ProcessPagesForDataSource(trace_writer, metadata, cpu, ds_config,
+                              parse_errors, bundle_end_timestamp, batch.data(),
+                              pages_in_batch, compact_sched_buf, table,
+                              symbolizer,
+                              /*clock_snapshot=*/std::nullopt);
+    pages_in_batch = 0;
+  };
   raw->ForEachPageSince(cutoff_ts, [&](const uint8_t* page, uint64_t) {
-    contiguous.insert(contiguous.end(), page, page + page_size);
-    pages++;
+    memcpy(batch.data() + pages_in_batch * sys_page_size, page, sys_page_size);
+    if (++pages_in_batch == kBatchPages)
+      flush_batch();
   });
-  if (pages == 0)
-    return;
-  ProcessPagesForDataSource(trace_writer, metadata, cpu, ds_config,
-                            parse_errors, bundle_end_timestamp,
-                            contiguous.data(), pages, compact_sched_buf, table,
-                            symbolizer,
-                            /*clock_snapshot=*/std::nullopt);
+  flush_batch();
 }
 
 // static

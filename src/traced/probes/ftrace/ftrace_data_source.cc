@@ -153,10 +153,13 @@ void FtraceDataSource::OnFtraceFlushComplete(FlushRequestID flush_request_id) {
   }
   auto callback = std::move(it->second);
   pending_flushes_.erase(it);
+  // Always consume the clone-flush marker (even if writer_ is null) to avoid
+  // leaking entries in clone_flush_ids_.
+  const bool is_clone = clone_flush_ids_.erase(flush_request_id) > 0;
   if (writer_) {
     // For CLONE_SNAPSHOT flushes, materialize the deferred-raw pages into the
     // writer before flushing, so they are committed and captured by the clone.
-    if (clone_flush_ids_.erase(flush_request_id) && controller_weak_)
+    if (is_clone && controller_weak_)
       controller_weak_->ParseDeferredRawForClone(this);
     WriteStats();
     writer_->Flush(std::move(callback));

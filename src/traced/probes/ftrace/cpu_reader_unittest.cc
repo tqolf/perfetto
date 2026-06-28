@@ -1031,8 +1031,8 @@ TEST_F(CpuReaderParsePagePayloadTest, DeferredRawParseEquivalentToImmediate) {
   uint64_t bundle_end_ts = 0;
 
   CpuReader::ParseRawRingBufferInto(
-      &raw, /*cutoff_ts=*/0, page_size, /*cpu=*/0, &ds_config, &trace_writer,
-      &metadata_, &parse_errors, &bundle_end_ts, compact_sched_buf.get(), table,
+      &raw, /*cutoff_ts=*/0, /*cpu=*/0, &ds_config, &trace_writer, &metadata_,
+      &parse_errors, &bundle_end_ts, compact_sched_buf.get(), table,
       /*symbolizer=*/nullptr);
 
   protos::gen::FtraceEventBundle bundle =

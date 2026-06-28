@@ -16,9 +16,11 @@
 
 #include "src/traced/probes/ftrace/raw_ftrace_ring_buffer.h"
 
+#include <unistd.h>
+
+#include <string>
 #include <vector>
 
-#include "perfetto/ext/base/temp_file.h"
 #include "test/gtest_and_gmock.h"
 
 namespace perfetto {
@@ -28,6 +30,14 @@ constexpr size_t kPageSize = 4096;
 
 std::vector<uint8_t> MakePage(uint8_t fill) {
   return std::vector<uint8_t>(kPageSize, fill);
+}
+
+// A unique path for the disk-overflow file. EnableDiskOverflow uses
+// open-then-unlink, so the file auto-removes; tests must not use base::TempFile
+// (which would double-unlink and crash).
+std::string DiskTempPath(int uniq) {
+  return "/tmp/raw_ftrace_rb_test_" + std::to_string(getpid()) + "_" +
+         std::to_string(uniq);
 }
 
 TEST(RawFtraceRingBufferTest, EmptyHasZeroSize) {
@@ -77,9 +87,9 @@ TEST(RawFtraceRingBufferTest, ClearResetsSize) {
 }
 
 TEST(RawFtraceRingBufferTest, DiskOverflowRetainsEvictedPages) {
-  base::TempFile f = base::TempFile::Create();
   RawFtraceRingBuffer buf(/*capacity_pages=*/2, kPageSize);
-  ASSERT_TRUE(buf.EnableDiskOverflow(f.path(), /*disk_capacity_pages=*/4));
+  ASSERT_TRUE(buf.EnableDiskOverflow(DiskTempPath(__LINE__),
+                                     /*disk_capacity_pages=*/4));
   // Mem holds newest 2 (ts 4,5); disk holds the evicted older 1,2,3.
   for (uint64_t ts = 1; ts <= 5; ts++)
     buf.PushPage(MakePage(static_cast<uint8_t>(ts)).data(), ts);
@@ -95,9 +105,9 @@ TEST(RawFtraceRingBufferTest, DiskOverflowRetainsEvictedPages) {
 }
 
 TEST(RawFtraceRingBufferTest, DiskOverflowDropsOldestWhenTotalFull) {
-  base::TempFile f = base::TempFile::Create();
   RawFtraceRingBuffer buf(/*capacity_pages=*/2, kPageSize);
-  ASSERT_TRUE(buf.EnableDiskOverflow(f.path(), /*disk_capacity_pages=*/2));
+  ASSERT_TRUE(buf.EnableDiskOverflow(DiskTempPath(__LINE__),
+                                     /*disk_capacity_pages=*/2));
   // Total capacity = mem 2 + disk 2 = 4. Push 6 -> keep newest 4 (ts 3..6).
   for (uint64_t ts = 1; ts <= 6; ts++)
     buf.PushPage(MakePage(static_cast<uint8_t>(ts)).data(), ts);
@@ -109,9 +119,9 @@ TEST(RawFtraceRingBufferTest, DiskOverflowDropsOldestWhenTotalFull) {
 }
 
 TEST(RawFtraceRingBufferTest, DiskOverflowRespectsCutoff) {
-  base::TempFile f = base::TempFile::Create();
   RawFtraceRingBuffer buf(/*capacity_pages=*/2, kPageSize);
-  ASSERT_TRUE(buf.EnableDiskOverflow(f.path(), /*disk_capacity_pages=*/4));
+  ASSERT_TRUE(buf.EnableDiskOverflow(DiskTempPath(__LINE__),
+                                     /*disk_capacity_pages=*/4));
   for (uint64_t ts : {10u, 20u, 30u, 40u, 50u})
     buf.PushPage(MakePage(static_cast<uint8_t>(ts)).data(), ts);
 

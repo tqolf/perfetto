@@ -173,8 +173,10 @@ class FtraceController {
   CpuReader::ParsingBuffers parsing_mem_;
   LazyKernelSymbolizer symbolizer_;
   // Active dynamic pid-filter watcher (when a config sets
-  // pid_filter_control_file). Reset when the last data source is removed.
+  // pid_filter_control_file) and the data source that owns it. The watcher is
+  // reset when its owner is removed (it captures that instance's tracefs).
   std::unique_ptr<FtracePidFilterWatcher> pid_filter_watcher_;
+  FtraceDataSource* pid_filter_watcher_owner_ = nullptr;
   FtraceConfigId next_cfg_id_ = 1;
   int tick_generation_ = 0;
   bool retain_ksyms_on_stop_ = false;

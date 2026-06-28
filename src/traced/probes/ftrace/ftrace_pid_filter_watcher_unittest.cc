@@ -26,15 +26,13 @@ namespace perfetto {
 namespace {
 
 TEST(FtracePidFilterWatcherTest, ParsePidFilterFile) {
-  EXPECT_EQ(ParsePidFilterFile("1\n2\n3\n"),
-            (std::vector<uint32_t>{1, 2, 3}));
+  EXPECT_EQ(ParsePidFilterFile("1\n2\n3\n"), (std::vector<uint32_t>{1, 2, 3}));
   // Trim, blank lines, '#' comments, dedup (first occurrence order).
   EXPECT_EQ(ParsePidFilterFile("# header\n10\n\n  20  \n10\n"),
             (std::vector<uint32_t>{10, 20}));
   EXPECT_TRUE(ParsePidFilterFile("\n# only comments\n").empty());
   // Non-numeric and non-positive ignored.
-  EXPECT_EQ(ParsePidFilterFile("abc\n0\n-5\n7\n"),
-            (std::vector<uint32_t>{7}));
+  EXPECT_EQ(ParsePidFilterFile("abc\n0\n-5\n7\n"), (std::vector<uint32_t>{7}));
 }
 
 // Fake expansion: pid -> {pid, pid+1} as strings.
@@ -94,7 +92,8 @@ TEST(FtracePidFilterWatcherTest, MissingFileKeepsLastFilter) {
         *out = file;
         return true;
       },
-      &FakeExpand, [&](const std::vector<std::string>&) {
+      &FakeExpand,
+      [&](const std::vector<std::string>&) {
         applies++;
         return true;
       },

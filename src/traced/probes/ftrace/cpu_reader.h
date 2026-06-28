@@ -431,7 +431,6 @@ class CpuReader {
   static void ParseRawRingBufferInto(
       const RawFtraceRingBuffer* raw,
       uint64_t cutoff_ts,
-      size_t page_size,
       size_t cpu,
       const FtraceDataSourceConfig* ds_config,
       TraceWriter* trace_writer,
