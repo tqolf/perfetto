@@ -309,6 +309,14 @@ message FtraceConfig {
   // enabled automatically when this field is set (see TracefsOption).
   repeated uint32 pids_to_trace = 39;
 
+  // Path to a control file for *dynamic* process filtering. traced_probes polls
+  // this file; its content is the complete desired PID set (one PID per
+  // non-empty line, '#' comments ignored). On change, the set is expanded to
+  // TIDs and set_event_pid is rewritten live (with event-fork following new
+  // descendants). Decouples mechanism from interface: an HTTP/gRPC service can
+  // simply write the file. Empty file clears the dynamic filter.
+  optional string pid_filter_control_file = 40;
+
   // Tracefs options to set directly in the tracefs instance. This is a very
   // niche feature since almost all of the options deal with formatting textual
   // output (the /trace file), which perfetto doesn't use.

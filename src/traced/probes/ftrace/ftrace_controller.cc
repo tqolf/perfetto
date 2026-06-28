@@ -54,6 +54,7 @@
 #include "src/traced/probes/ftrace/ftrace_config_utils.h"
 #include "src/traced/probes/ftrace/ftrace_data_source.h"
 #include "src/traced/probes/ftrace/ftrace_metadata.h"
+#include "src/traced/probes/ftrace/ftrace_pid_filter_watcher.h"
 #include "src/traced/probes/ftrace/ftrace_stats.h"
 #include "src/traced/probes/ftrace/predefined_tracepoints.h"
 #include "src/traced/probes/ftrace/proto_translation_table.h"
@@ -615,6 +616,31 @@ bool FtraceController::AddDataSource(FtraceDataSource* data_source) {
     return false;
   }
 
+  // Dynamic process filtering: poll a control file and rewrite set_event_pid
+  // live. Static tids/pids from the config are preserved across updates.
+  if (!data_source->config().pid_filter_control_file().empty() &&
+      !pid_filter_watcher_) {
+    std::vector<std::string> static_tids;
+    for (uint32_t tid : data_source->config().tids_to_trace())
+      static_tids.push_back(std::to_string(tid));
+    for (uint32_t pid : data_source->config().pids_to_trace()) {
+      std::vector<std::string> t = ExpandPidToTids(pid);
+      static_tids.insert(static_tids.end(), t.begin(), t.end());
+    }
+    instance->tracefs->SetTracefsOption("event-fork", true);
+    Tracefs* tracefs = instance->tracefs.get();
+    std::string path = data_source->config().pid_filter_control_file();
+    pid_filter_watcher_ = std::make_unique<FtracePidFilterWatcher>(
+        task_runner_, path, std::move(static_tids),
+        [path](std::string* out) { return base::ReadFile(path, out); },
+        [](uint32_t pid) { return ExpandPidToTids(pid); },
+        [tracefs](const std::vector<std::string>& tids) {
+          return tracefs->SetEventTidFilter(tids);
+        },
+        /*poll_period_ms=*/1000);
+    pid_filter_watcher_->Start();
+  }
+
   const FtraceDataSourceConfig* ds_config =
       instance->ftrace_config_muxer->GetDataSourceConfig(config_id);
   auto it_and_inserted = data_sources_.insert(data_source);
@@ -660,6 +686,11 @@ void FtraceController::RemoveDataSource(FtraceDataSource* data_source) {
   size_t removed = data_sources_.erase(data_source);
   if (!removed)
     return;  // can happen if AddDataSource failed
+
+  // Tear down the dynamic pid-filter watcher once no data sources remain (it
+  // captures the instance tracefs, which must outlive it).
+  if (data_sources_.empty())
+    pid_filter_watcher_.reset();
 
   FtraceInstanceState* instance =
       GetOrCreateInstance(data_source->config().instance_name());

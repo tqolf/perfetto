@@ -17,8 +17,10 @@
 #ifndef SRC_TRACED_PROBES_FTRACE_FTRACE_CONFIG_UTILS_H_
 #define SRC_TRACED_PROBES_FTRACE_FTRACE_CONFIG_UTILS_H_
 
+#include <cstdint>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "protos/perfetto/config/ftrace/ftrace_config.gen.h"
 
@@ -33,6 +35,15 @@ using FtraceConfigId = uint64_t;
 bool RequiresAtrace(const FtraceConfig&);
 
 bool ValidConfig(const FtraceConfig& config);
+
+// Expands a process id to all of its current thread ids (as decimal strings)
+// by listing /proc/<pid>/task. Returns empty if the process is gone.
+std::vector<std::string> ExpandPidToTids(uint32_t pid);
+
+// Parses a dynamic pid-filter control file: the complete desired PID set, one
+// PID per line. Empty lines and lines starting with '#' are ignored. Returns
+// the deduplicated PID list (order preserved by first occurrence).
+std::vector<uint32_t> ParsePidFilterFile(const std::string& content);
 
 }  // namespace perfetto
 

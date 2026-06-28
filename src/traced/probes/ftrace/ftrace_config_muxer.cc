@@ -42,25 +42,6 @@
 namespace perfetto {
 namespace {
 
-// Expands a process id to all of its current thread ids by listing
-// /proc/<pid>/task. Returns an empty vector if the process is gone.
-std::vector<std::string> ExpandPidToTids(uint32_t pid) {
-  std::vector<std::string> tids;
-  std::string path = "/proc/" + std::to_string(pid) + "/task";
-  DIR* dir = opendir(path.c_str());
-  if (!dir)
-    return tids;
-  while (struct dirent* ent = readdir(dir)) {
-    if (ent->d_name[0] == '.')
-      continue;
-    std::optional<int32_t> tid = base::StringToInt32(ent->d_name);
-    if (tid.has_value())
-      tids.push_back(std::to_string(*tid));
-  }
-  closedir(dir);
-  return tids;
-}
-
 using protos::pbzero::KprobeEvent;
 
 constexpr uint64_t kDefaultLowRamPerCpuBufferSizeKb = 2 * (1ULL << 10);   // 2mb
@@ -189,8 +170,7 @@ bool ValidateKprobeName(const std::string& name) {
 // See: "Exclusive single-tenant features" in ftrace_config.proto for more
 // details.
 bool HasExclusiveFeatures(const FtraceConfig& request) {
-  return !request.tids_to_trace().empty() ||
-         !request.pids_to_trace().empty() ||
+  return !request.tids_to_trace().empty() || !request.pids_to_trace().empty() ||
          !request.tracefs_options().empty() ||
          !request.tracing_cpumask().empty();
 }

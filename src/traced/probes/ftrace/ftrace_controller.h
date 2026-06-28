@@ -37,6 +37,7 @@ namespace perfetto {
 
 class FtraceConfigMuxer;
 class FtraceDataSource;
+class FtracePidFilterWatcher;
 class Tracefs;
 class LazyKernelSymbolizer;
 class ProtoTranslationTable;
@@ -171,6 +172,9 @@ class FtraceController {
   Observer* const observer_;
   CpuReader::ParsingBuffers parsing_mem_;
   LazyKernelSymbolizer symbolizer_;
+  // Active dynamic pid-filter watcher (when a config sets
+  // pid_filter_control_file). Reset when the last data source is removed.
+  std::unique_ptr<FtracePidFilterWatcher> pid_filter_watcher_;
   FtraceConfigId next_cfg_id_ = 1;
   int tick_generation_ = 0;
   bool retain_ksyms_on_stop_ = false;
