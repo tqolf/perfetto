@@ -33,9 +33,9 @@
 #include "src/traced/probes/ftrace/ftrace_config_muxer.h"
 #include "src/traced/probes/ftrace/ftrace_controller.h"  // FtraceClockSnapshot
 #include "src/traced/probes/ftrace/ftrace_data_source.h"
-#include "src/traced/probes/ftrace/raw_ftrace_ring_buffer.h"
 #include "src/traced/probes/ftrace/ftrace_print_filter.h"
 #include "src/traced/probes/ftrace/proto_translation_table.h"
+#include "src/traced/probes/ftrace/raw_ftrace_ring_buffer.h"
 
 #include "protos/perfetto/trace/ftrace/ftrace_event.pbzero.h"
 #include "protos/perfetto/trace/ftrace/ftrace_event_bundle.pbzero.h"
@@ -362,9 +362,10 @@ size_t CpuReader::ReadAndProcessBatch(
       // skip parsing. They are parsed only when a snapshot trigger fires (see
       // FtraceController), which keeps steady-state CPU low.
       size_t cap_pages = std::max<size_t>(
-          1, (static_cast<size_t>(ds_config->deferred_raw_per_cpu_mem_limit_kb) *
-              1024) /
-                 sys_page_size);
+          1,
+          (static_cast<size_t>(ds_config->deferred_raw_per_cpu_mem_limit_kb) *
+           1024) /
+              sys_page_size);
       RawFtraceRingBuffer* raw =
           data_source->GetOrCreateRawRingBuffer(cpu_, cap_pages, sys_page_size);
       for (size_t i = 0; i < pages_read; i++) {
@@ -527,9 +528,10 @@ void CpuReader::ParseRawRingBufferInto(
   });
   if (pages == 0)
     return;
-  ProcessPagesForDataSource(trace_writer, metadata, cpu, ds_config, parse_errors,
-                            bundle_end_timestamp, contiguous.data(), pages,
-                            compact_sched_buf, table, symbolizer,
+  ProcessPagesForDataSource(trace_writer, metadata, cpu, ds_config,
+                            parse_errors, bundle_end_timestamp,
+                            contiguous.data(), pages, compact_sched_buf, table,
+                            symbolizer,
                             /*clock_snapshot=*/std::nullopt);
 }
 

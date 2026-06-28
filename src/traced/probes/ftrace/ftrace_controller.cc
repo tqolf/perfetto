@@ -47,7 +47,6 @@
 #include "src/traced/probes/ftrace/atrace_hal_wrapper.h"
 #include "src/traced/probes/ftrace/compact_sched.h"
 #include "src/traced/probes/ftrace/cpu_reader.h"
-#include "src/traced/probes/ftrace/raw_ftrace_ring_buffer.h"
 #include "src/traced/probes/ftrace/cpu_stats_parser.h"
 #include "src/traced/probes/ftrace/event_info.h"
 #include "src/traced/probes/ftrace/event_info_constants.h"
@@ -58,6 +57,7 @@
 #include "src/traced/probes/ftrace/ftrace_stats.h"
 #include "src/traced/probes/ftrace/predefined_tracepoints.h"
 #include "src/traced/probes/ftrace/proto_translation_table.h"
+#include "src/traced/probes/ftrace/raw_ftrace_ring_buffer.h"
 #include "src/traced/probes/ftrace/tracefs.h"
 #include "src/traced/probes/ftrace/vendor_tracepoints.h"
 
@@ -533,10 +533,10 @@ void FtraceController::ParseDeferredRawForClone(FtraceDataSource* target_ds) {
           continue;
         CompactSchedBuffer compact_sched_buf;
         CpuReader::ParseRawRingBufferInto(
-            raw, /*cutoff_ts=*/0, page_size, cpu, ds_config,
-            ds->trace_writer(), ds->mutable_metadata(),
-            ds->mutable_parse_errors(), ds->mutable_bundle_end_timestamp(cpu),
-            &compact_sched_buf, table, &symbolizer_);
+            raw, /*cutoff_ts=*/0, page_size, cpu, ds_config, ds->trace_writer(),
+            ds->mutable_metadata(), ds->mutable_parse_errors(),
+            ds->mutable_bundle_end_timestamp(cpu), &compact_sched_buf, table,
+            &symbolizer_);
       }
     }
   });

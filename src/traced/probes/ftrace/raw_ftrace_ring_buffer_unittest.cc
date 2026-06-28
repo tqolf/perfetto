@@ -63,9 +63,8 @@ TEST(RawFtraceRingBufferTest, ForEachPageSinceFiltersByCutoff) {
     buf.PushPage(MakePage(static_cast<uint8_t>(ts)).data(), ts);
 
   std::vector<uint64_t> seen;
-  buf.ForEachPageSince(20, [&](const uint8_t*, uint64_t ts) {
-    seen.push_back(ts);
-  });
+  buf.ForEachPageSince(
+      20, [&](const uint8_t*, uint64_t ts) { seen.push_back(ts); });
   EXPECT_EQ(seen, (std::vector<uint64_t>{25, 35}));
 }
 
