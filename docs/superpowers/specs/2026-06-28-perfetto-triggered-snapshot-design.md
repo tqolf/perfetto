@@ -258,6 +258,13 @@ watchdog_posix.cc: Memory window of 358 MB is above the 34 MB limit.
 
 结论：磁盘溢出段让"大 N + 多核"可行——用顺序磁盘 IO 换内存，内存段保持在护栏内，溢出页在触发时一并解析进快照。这是 §15 内存护栏约束的解法之一（另一解法是 §16 进程过滤降事件量）。
 
+### retain_seconds 时间裁剪 —— 已实现 + e2e
+**已实现**（commit 048f26c10a）：触发时 `ParseDeferredRawForClone` 计算 `cutoff = GetBootTimeNs() - retain_seconds`，只解析窗口内的页。仅在 boot 时钟（`ftrace_clock==FTRACE_CLOCK_UNSPECIFIED`，与页 timestamp 同域）时启用,其它时钟回退全量解析。这同时**按时间界定解析量**,缓解触发瞬间的解析峰值/watchdog 风险（审查 I1）。
+
+真机 e2e：大内存段（可存 8s+）+ `retain_seconds=2`,稳态跑 8s 后触发 → 快照事件**时间跨度 1.999s**（18 万事件）,而非整个 buffer。证明时间裁剪生效。
+
+> 注：`retain_seconds` 是从**快照时刻**（=触发+stop_delay）往回的窗口。要覆盖"触发前 N + 后 M",配 `retain_seconds = N+M`。
+
 ## 16. 进程级事件过滤（可选，可动态增删）
 
 ### 动机
