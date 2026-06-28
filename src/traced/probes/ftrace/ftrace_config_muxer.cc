@@ -713,6 +713,10 @@ bool FtraceConfigMuxer::SetupConfig(FtraceConfigId id,
         request.deferred_raw_capture().per_cpu_mem_limit_kb();
     dsc.deferred_raw_retain_seconds =
         request.deferred_raw_capture().retain_seconds();
+    dsc.deferred_raw_disk_path =
+        request.deferred_raw_capture().disk_overflow_path();
+    dsc.deferred_raw_per_cpu_disk_limit_kb =
+        request.deferred_raw_capture().per_cpu_disk_limit_kb();
   }
   return true;
 }

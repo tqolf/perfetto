@@ -54,6 +54,8 @@ struct FtraceDataSourceConfig {
   bool deferred_raw_enabled = false;
   uint32_t deferred_raw_per_cpu_mem_limit_kb = 0;
   uint32_t deferred_raw_retain_seconds = 0;
+  std::string deferred_raw_disk_path;
+  uint32_t deferred_raw_per_cpu_disk_limit_kb = 0;
 
   FtraceDataSourceConfig(
       EventFilter event_filter_in,

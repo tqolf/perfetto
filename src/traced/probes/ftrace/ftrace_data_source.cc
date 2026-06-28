@@ -16,6 +16,8 @@
 
 #include "src/traced/probes/ftrace/ftrace_data_source.h"
 
+#include "src/traced/probes/ftrace/ftrace_config_muxer.h"  // FtraceDataSourceConfig
+
 #include "perfetto/ext/base/string_splitter.h"
 #include "perfetto/ext/base/string_utils.h"
 #include "perfetto/ext/base/string_view.h"
@@ -191,8 +193,22 @@ RawFtraceRingBuffer* FtraceDataSource::GetOrCreateRawRingBuffer(
   if (cpu >= raw_ring_buffers_.size())
     raw_ring_buffers_.resize(cpu + 1);
   if (!raw_ring_buffers_[cpu]) {
-    raw_ring_buffers_[cpu] =
-        std::make_unique<RawFtraceRingBuffer>(capacity_pages, page_size);
+    auto buf = std::make_unique<RawFtraceRingBuffer>(capacity_pages, page_size);
+    const FtraceDataSourceConfig* cfg = parsing_config_;
+    if (cfg && !cfg->deferred_raw_disk_path.empty() &&
+        cfg->deferred_raw_per_cpu_disk_limit_kb > 0) {
+      size_t disk_pages =
+          (static_cast<size_t>(cfg->deferred_raw_per_cpu_disk_limit_kb) * 1024) /
+          page_size;
+      if (disk_pages > 0) {
+        std::string path = cfg->deferred_raw_disk_path +
+                           "/deferred_raw_cpu" + std::to_string(cpu);
+        if (!buf->EnableDiskOverflow(path, disk_pages))
+          PERFETTO_ELOG("deferred-raw: disk overflow init failed for %s",
+                        path.c_str());
+      }
+    }
+    raw_ring_buffers_[cpu] = std::move(buf);
   }
   return raw_ring_buffers_[cpu].get();
 }
