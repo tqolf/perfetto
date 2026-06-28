@@ -277,10 +277,17 @@ watchdog_posix.cc: Memory window of 358 MB is above the 34 MB limit.
 - 纯配置层面，`tids_to_trace` 现在就能用（静态 TID 过滤）；**进程级 + event-fork + 动态**是新增改造，集中在 muxer / tracefs / 一个控制 watch。
 - 与 deferred-raw 正交且互补：先内核过滤（降事件量）→ 再 deferred 缓存（降解析）。两者叠加对 CPU/IO/内存三者都最优。
 
+### 实现进展 + e2e 实测
+**进程级 `pids_to_trace` 已实现并真机验证**（commit 1f53decfa5）：`FtraceConfig.pids_to_trace`（字段 39）按 `/proc/<pid>/task` 展开当前 TID，与 `tids_to_trace` 求并集写 `set_event_pid`，并自动开启内核 `event-fork`（跟随未来线程/子进程）。单测 `ProcessLevelPidFilter`（用 `getpid()` 展开），41 muxer 测试通过。
+
+真机 e2e（5 线程 python 目标 + 20 噪声进程，只过滤目标 PID）：
+- 目标进程的 **5 个线程全部被捕获**（主 + 4 worker，各 ~7800 事件）→ PID→TID 展开抓全。
+- 总事件 ~11 万 vs 无过滤数百万 → **降约 20 倍**。
+- **sched_switch 语义已确认**：过滤后仍记录每次切换的 prev/next **对手方**（噪声进程以零星计数出现，作为目标的切换对端），即"能拿到目标的完整切换上下文，连对手方一起给"——正是排查所需。
+
 ### 待确认（实现前）
-- 动态控制入口选 (A) 还是别的形式；
-- `event-fork` 同时影响 function tracer 的 `function-fork`，需确认只动 event 过滤；
-- sched_switch 这类涉及 prev/next 两个任务的事件，内核 `set_event_pid` 的语义（通常 prev 或 next 命中即记录），需在真机确认过滤后仍能拿到关心进程的完整切换上下文。
+- 动态控制入口选 (A) 还是别的形式（控制文件 watch，第二步实现）；
+- `event-fork` 同时影响 function tracer 的 `function-fork`，本方案只在设置 `pids_to_trace` 时开启，且 deferred-raw 不用 function tracer，无冲突。
 
 ### 控制入口与 HTTP
 控制文件天然适合后接 HTTP/gRPC：它把"机制"和"接口"解耦。traced_probes 只认一个控制文件（如 `/run/perfetto/ftrace_pid_filter`），内容变化即重算 TID 并重写 `set_event_pid`；HTTP 服务只是薄壳（`PUT /filter` → 写文件），可作为独立进程、不与 traced_probes 耦合。控制协议建议**行式**（每行一个 PID，或 `+1234`/`-1234` 增删），便于 HTTP 转发与 `echo >>` 手动调试。机器人单机部署，HTTP 服务与 traced_probes 共享文件系统，无跨主机问题。
