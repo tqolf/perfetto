@@ -131,15 +131,17 @@ trigger 到达 service
 ## 7. 通路 A / C 设计
 
 - **A**（SDK track events + 低频关键 ftrace）：与 B 同会话不同 data source，走原生解析（开销本就低），共享 service buffer 与 clock snapshot。
-- **C**（perf 采样 / 详细 ftrace，只录后 M 秒）：独立 `START_TRACING` 第二会话，trigger 时启动录 M 秒。
-  - **合入同一份 trace**：Perfetto trace 文件本质是 `TracePacket` 的 protobuf 流、**物理可拼接**。C 会话落盘后，将其字节 **concat 到主快照文件尾部**，对外呈现为单份 trace。
-  - 时间轴对齐：同机 boot clock 一致，各会话自带 clock snapshot，`trace_processor` 可正确合并解码。
-  - concat 动作可在 `perfetto_cmd` 的 snapshot 落盘阶段完成，或由外围触发脚本兜底。
+- **C**（详细 ftrace，决策已定）：**纯配置，无需改代码、无需第二会话/concat**。把详细 ftrace 事件（irq、workqueue、block、更多 sched、syscalls 等）直接加进 **deferred-raw 的 ftrace 事件集**——它们和主数据一样常驻缓存、触发时一并解析进**同一快照**，天然前 N 秒 + 后 M 秒。现有实现（Task 1–5）已支持，只是配置里多列事件。
+  - 代价：详细事件量更大 → raw buffer 更大（受 §15 内存护栏约束），用 §16 进程过滤压低事件量、或 Stage 2 磁盘溢出承接大窗口。
+  - 注：perf 栈采样（traced_perf）是独立 producer、无 deferred 机制，要进同一单快照需较大改造；本项目范围内**通路 C 限定为详细 ftrace**。
 
 ## 8. 触发设计
 
-- **外部触发**：业务 / 监控进程 `perfetto --trigger <name>` 或 SDK `Tracing::ActivateTriggers`。IPC 路径：`producer_ipc_service.cc:346` → `TracingServiceImpl::ActivateTriggers`（`tracing_service_impl.cc:1865`），原生。
-- **内部自动判定**：⚠️ 关键约束——常驻期通路 B **不解析**，无法从 trace 内容取指标，故内部判定**不能寄生在 `traced_probes` 内**。采用独立轻量 **watcher 进程**：读 PSI / `loadavg` / `/proc` 指标，越阈值即发 trigger。这是唯一干净的内部触发路径。
+- **触发方式（决策已定）：应用主动触发**。机器人业务在自己发现异常时直接发触发，不需要独立 watcher/检测器。两种等价方式：
+  - 进程内 SDK：`Tracing::ActivateTriggers({"snap"})`（一行）。
+  - 脚本/外部进程：`perfetto -c trig.cfg`，其中 `trig.cfg` 仅含 `activate_triggers: "snap"`（注意：`perfetto` **无** `--trigger` 选项）。
+  - IPC 路径：`producer_ipc_service.cc:346` → `TracingServiceImpl::ActivateTriggers`（`tracing_service_impl.cc:1865`），原生。
+- 不实现 watcher/标准检测器（见 §17，按决策已删减）：业务自有健康判定，发现问题即发 `snap` 触发。
 
 ## 9. 配置（proto 扩展）
 
@@ -298,6 +300,8 @@ watchdog_posix.cc: Memory window of 358 MB is above the 34 MB limit.
 控制文件天然适合后接 HTTP/gRPC：它把"机制"和"接口"解耦。traced_probes 只认一个控制文件（如 `/run/perfetto/ftrace_pid_filter`），内容变化即重算 TID 并重写 `set_event_pid`；HTTP 服务只是薄壳（`PUT /filter` → 写文件），可作为独立进程、不与 traced_probes 耦合。控制协议建议**行式**（每行一个 PID，或 `+1234`/`-1234` 增删），便于 HTTP 转发与 `echo >>` 手动调试。机器人单机部署，HTTP 服务与 traced_probes 共享文件系统，无跨主机问题。
 
 ## 17. 触发检测架构（标准 + 业务自定义）
+
+> **决策已定（精简）**：机器人业务**自有异常判定**，发现问题后**主动发 `snap` 触发**（SDK `ActivateTriggers` 或 `perfetto -c trig.cfg`）。因此**不实现 watcher 和标准检测器**（§17.2 取消）。下文"沙漏腰"的契约思想仍成立——触发机制不关心谁触发；只是检测侧由业务承担，本项目不内置检测器。`max_per_24_h`/`skip_probability` 原生限流仍可用；需要时不同问题可用不同具名 trigger 映射不同抓取档案。
 
 整套方案服务于**机器人稳定性排查**：在机器人出现不稳定的瞬间抓到现场。难点在"如何检测那一刻"，且要同时支持标准信号与业务自定义。设计原则：**不让检测器去理解所有"不稳定"，而是把"发触发"做成谁都能用的统一契约**。
 

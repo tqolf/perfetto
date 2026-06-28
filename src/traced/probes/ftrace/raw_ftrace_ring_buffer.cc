@@ -42,8 +42,7 @@ bool RawFtraceRingBuffer::EnableDiskOverflow(const std::string& path,
                                              size_t disk_capacity_pages) {
   if (disk_capacity_pages == 0)
     return false;
-  base::ScopedFile fd =
-      base::OpenFile(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+  base::ScopedFile fd = base::OpenFile(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
   if (!fd)
     return false;
   if (ftruncate(*fd, static_cast<off_t>(disk_capacity_pages * page_size_)) != 0)

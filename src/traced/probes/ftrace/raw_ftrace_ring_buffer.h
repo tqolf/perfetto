@@ -77,7 +77,8 @@ class RawFtraceRingBuffer {
     return reinterpret_cast<uint8_t*>(storage_.Get()) + slot * page_size_;
   }
   bool disk_enabled() const { return disk_capacity_pages_ > 0; }
-  // Appends one page to the on-disk overflow ring (dropping its oldest if full).
+  // Appends one page to the on-disk overflow ring (dropping its oldest if
+  // full).
   void DiskPush(const uint8_t* page, uint64_t page_ts);
 
   const size_t capacity_pages_;

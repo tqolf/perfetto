@@ -198,11 +198,12 @@ RawFtraceRingBuffer* FtraceDataSource::GetOrCreateRawRingBuffer(
     if (cfg && !cfg->deferred_raw_disk_path.empty() &&
         cfg->deferred_raw_per_cpu_disk_limit_kb > 0) {
       size_t disk_pages =
-          (static_cast<size_t>(cfg->deferred_raw_per_cpu_disk_limit_kb) * 1024) /
+          (static_cast<size_t>(cfg->deferred_raw_per_cpu_disk_limit_kb) *
+           1024) /
           page_size;
       if (disk_pages > 0) {
-        std::string path = cfg->deferred_raw_disk_path +
-                           "/deferred_raw_cpu" + std::to_string(cpu);
+        std::string path = cfg->deferred_raw_disk_path + "/deferred_raw_cpu" +
+                           std::to_string(cpu);
         if (!buf->EnableDiskOverflow(path, disk_pages))
           PERFETTO_ELOG("deferred-raw: disk overflow init failed for %s",
                         path.c_str());

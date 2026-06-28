@@ -87,9 +87,11 @@ TEST(RawFtraceRingBufferTest, DiskOverflowRetainsEvictedPages) {
   std::vector<uint64_t> seen;
   buf.ForEachPageSince(0, [&](const uint8_t* p, uint64_t ts) {
     seen.push_back(ts);
-    EXPECT_EQ(p[0], static_cast<uint8_t>(ts));  // Content survives disk round-trip.
+    EXPECT_EQ(p[0],
+              static_cast<uint8_t>(ts));  // Content survives disk round-trip.
   });
-  EXPECT_EQ(seen, (std::vector<uint64_t>{1, 2, 3, 4, 5}));  // All retained, in order.
+  EXPECT_EQ(seen,
+            (std::vector<uint64_t>{1, 2, 3, 4, 5}));  // All retained, in order.
 }
 
 TEST(RawFtraceRingBufferTest, DiskOverflowDropsOldestWhenTotalFull) {
@@ -101,8 +103,8 @@ TEST(RawFtraceRingBufferTest, DiskOverflowDropsOldestWhenTotalFull) {
     buf.PushPage(MakePage(static_cast<uint8_t>(ts)).data(), ts);
 
   std::vector<uint64_t> seen;
-  buf.ForEachPageSince(0,
-                       [&](const uint8_t*, uint64_t ts) { seen.push_back(ts); });
+  buf.ForEachPageSince(
+      0, [&](const uint8_t*, uint64_t ts) { seen.push_back(ts); });
   EXPECT_EQ(seen, (std::vector<uint64_t>{3, 4, 5, 6}));
 }
 
@@ -114,8 +116,8 @@ TEST(RawFtraceRingBufferTest, DiskOverflowRespectsCutoff) {
     buf.PushPage(MakePage(static_cast<uint8_t>(ts)).data(), ts);
 
   std::vector<uint64_t> seen;
-  buf.ForEachPageSince(30,
-                       [&](const uint8_t*, uint64_t ts) { seen.push_back(ts); });
+  buf.ForEachPageSince(
+      30, [&](const uint8_t*, uint64_t ts) { seen.push_back(ts); });
   EXPECT_EQ(seen, (std::vector<uint64_t>{30, 40, 50}));  // Spans disk + mem.
 }
 
