@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<!--
+  OUTPUT SPEC  （本文件唯一注释；正文零注释 · 需求/定制集中于此）
+  画像        : 工程文档 / 部署 + 设计 + 实现指南
+  主题        : Perfetto 常驻低开销 + 触发式前N后M秒快照（deferred-raw）部署与设计实现
+  风格        : house-style v1.0 · 设计语言=house-style · 配色=default   （呈现层定义见 claude-workflows/craft/，此处内联其规范 CSS；记版本便于风格微调后替换）
+  数据来源    : 本项目真机实测 + 源码（fork: tqolf/perfetto, 分支 dev/oakley/triggered-snapshot-design）
+  数据/表现   : 结构化事实（实测表/配置表/文件表）在 <script id="data" type="application/json">；JS 模板渲染；叙述性散文留在标记中
+  输出打包    : single-html（单文件自包含 · 内联 CSS+JS · 零外链）
+  持久化      : 主题 → localStorage[theme]；Tab 视图态 → sessionStorage[cw:<file>:tab]
+  自包含      : 单文件 · 内联 CSS+JS · 零外链
+  变更历史    : v1.0 (2026-06-28) 初版
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>触发式快照 · 部署 / 设计 / 实现指南</title>
+<style>
+:root{
+  --ink:#1c2530;--ink-2:#475061;--ink-3:#8a93a2;--line:#e4e7ec;--line-2:#eef1f4;
+  --bg:#f2f3f7;--paper:#fff;--blue:#2b6cb0;--blue-d:#1e4e80;--blue-l:#e8f0f9;
+  --teal:#0f8a8a;--teal-l:#e2f5f5;--amber:#c77d10;--amber-l:#fbf1da;--green:#1f9d57;--green-l:#e6f5ec;
+  --red:#d8443a;--red-l:#fbe9e7;--purple:#7048c4;--purple-l:#eee5fb;
+  --shadow:0 6px 24px rgba(21,35,58,.08);--shadow-sm:0 2px 8px rgba(21,35,58,.06);
+  --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  --sans:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",-apple-system,BlinkMacSystemFont,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}html{scroll-behavior:smooth}
+body{font-family:var(--sans);color:var(--ink);background:var(--bg);font-size:15px;line-height:1.78;-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-decoration:none;border-bottom:1px solid rgba(43,108,176,.3)}a:hover{color:var(--amber)}
+.masthead{background:linear-gradient(135deg,#1e4e80,#2b6cb0 58%,#3a86c8);color:#fff;padding:40px 44px 46px;position:relative;overflow:hidden}
+.masthead::before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.06) 1px,transparent 1px);background-size:34px 34px}
+.mast-in{max-width:none;position:relative}
+.kicker{font-size:12px;letter-spacing:2.5px;color:#bcd9f0;font-weight:600;text-transform:uppercase}
+.masthead h1{font-size:29px;font-weight:800;margin:8px 0 6px}
+.masthead .sub{font-size:14.5px;color:#cfe0ec;max-width:900px;margin-top:10px}
+.mast-tags{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap}
+.mast-tags span{font-size:11.5px;font-family:var(--mono);color:#e8f0f9;border:1px solid rgba(255,255,255,.32);border-radius:20px;padding:3px 11px}
+.shell{max-width:none;display:flex;gap:44px;padding:30px 44px 110px;align-items:flex-start}
+.toc{width:240px;flex:none;position:sticky;top:20px;font-size:13px;max-height:calc(100vh - 40px);overflow-y:auto}
+.toc .h{font-size:11px;letter-spacing:2px;color:var(--ink-3);font-weight:700;text-transform:uppercase;margin:0 0 10px 10px}
+.toc a{display:block;padding:6px 10px;border-radius:7px;color:var(--ink-2);border:none;border-left:2px solid transparent}
+.toc a:hover{background:var(--blue-l);color:var(--blue-d)}.toc a.active{background:var(--blue-l);color:var(--blue-d);font-weight:600;border-left-color:var(--amber)}
+.toc a.sub{padding-left:26px;font-size:12.5px;color:var(--ink-3)}.toc a.sub:hover{color:var(--blue-d)}
+.toc a .n{color:var(--ink-3);margin-right:6px;font-variant-numeric:tabular-nums}
+.content{flex:1;min-width:0;background:var(--paper);border-radius:14px;box-shadow:var(--shadow);padding:44px 52px 60px}
+.sec{padding-top:14px;margin-top:30px;scroll-margin-top:16px}.sec:first-child{margin-top:0}
+h2.sh{font-size:23px;font-weight:800;display:flex;align-items:center;gap:12px;margin-bottom:8px;padding-bottom:12px;border-bottom:2px solid var(--line)}
+h2.sh .n{font-size:14px;font-weight:800;color:#fff;background:var(--blue);min-width:30px;height:30px;padding:0 7px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;flex:none}
+h3{font-size:17.5px;font-weight:700;margin:26px 0 8px;color:var(--blue-d)}
+p{margin:10px 0}ul,ol{margin:10px 0;padding-left:24px}li{margin:6px 0}
+strong{font-weight:700}em{font-style:normal;color:var(--purple);font-weight:600}
+code{font-family:var(--mono);font-size:.86em;background:#eef1f5;padding:2px 6px;border-radius:5px;color:var(--blue-d)}
+pre{background:#0f1722;color:#dbe6f2;border-radius:10px;padding:15px 18px;margin:14px 0;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.65}
+pre code{background:none;color:inherit;padding:0;font-size:inherit}
+.lead{font-size:16px;color:var(--ink-2);margin-bottom:8px}
+.tldr{background:linear-gradient(135deg,var(--blue-l),#f4f9fd);border:1px solid #cfe0ef;border-radius:14px;padding:22px 26px;margin:6px 0}
+.tldr h4{margin:0 0 8px;color:var(--blue-d);font-size:14px;letter-spacing:.5px;text-transform:uppercase}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:18px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media(max-width:820px){.grid-2,.grid-3{grid-template-columns:1fr}.toc{display:none}.content{padding:28px 22px}}
+.box{border-radius:10px;padding:14px 18px;margin:16px 0;border-left:4px solid var(--blue);background:var(--blue-l);font-size:14px}
+.box .bl{font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:5px;color:var(--blue-d)}
+.box.tip{border-color:var(--green);background:var(--green-l)}.box.tip .bl{color:var(--green)}
+.box.warn{border-color:var(--amber);background:var(--amber-l)}.box.warn .bl{color:var(--amber)}
+.box.danger{border-color:var(--red);background:var(--red-l)}.box.danger .bl{color:var(--red)}
+.box.intuit{border-color:var(--teal);background:var(--teal-l)}.box.intuit .bl{color:var(--teal)}
+.box.key{border-color:var(--purple);background:var(--purple-l)}.box.key .bl{color:var(--purple)}
+.table-wrap{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:12px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--line-2);vertical-align:top}
+thead th{background:#f6f8fb;color:var(--ink-3);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;font-weight:700}
+tbody tr:last-child td{border-bottom:none}tbody tr:hover{background:#f8fafc}td:first-child{font-weight:600}
+.diagram{margin:22px 0}
+.dact{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:#fbfcfe;box-shadow:var(--shadow-sm)}
+.dact .dhead{padding:11px 18px;font-weight:800;font-size:15.5px;color:#fff;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dact.a1 .dhead{background:linear-gradient(90deg,#2b6cb0,#3a86c8)}
+.dact.a2 .dhead{background:linear-gradient(90deg,#0f8a8a,#27a3a3)}
+.dact.a3 .dhead{background:linear-gradient(90deg,#1f9d57,#36b56e)}
+.dhead .dmeta{font-size:11.5px;font-weight:600;font-family:var(--mono);opacity:.92}
+.dbody{padding:18px}
+.dflow{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.dnode{background:#fff;border:1px solid var(--line);border-radius:10px;padding:9px 15px;font-size:13.5px;font-weight:700;box-shadow:var(--shadow-sm);line-height:1.35}
+.dnode small{display:block;font-weight:500;color:var(--ink-3);font-size:11px;margin-top:3px;font-family:var(--mono)}
+.darr{color:var(--blue);font-weight:800;font-style:normal;font-size:19px}
+.dnote{margin-top:14px;background:var(--purple-l);color:var(--purple);border-radius:9px;padding:9px 14px;font-size:13px;font-weight:600}
+.dconn{text-align:center;color:var(--ink-3);font-size:11.5px;font-family:var(--mono);letter-spacing:1px;padding:4px 0 2px}
+.dconn::before{content:"";display:block;width:2px;height:16px;background:var(--ink-3);margin:0 auto 5px;opacity:.5}
+.dconn::after{content:"▼";display:block;color:var(--ink-3);opacity:.5;font-size:9px;margin-top:2px}
+.dside{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+.dpill{font-size:12.5px;font-weight:600;border-radius:9px;padding:8px 13px;border:1px solid;flex:1 1 220px}
+.dpill b{font-weight:800}
+.dpill.ok{background:var(--green-l);color:var(--green);border-color:#bfe6cd}
+.dpill.stop{background:var(--red-l);color:var(--red);border-color:#f3c9c4}
+.dpill.flush{background:var(--blue-l);color:var(--blue-d);border-color:#cfe0ef}
+.tag{display:inline-block;font-size:10.5px;font-family:var(--mono);padding:1px 8px;border-radius:5px}
+.tag.par{background:var(--teal-l);color:var(--teal)}.tag.ser{background:var(--blue-l);color:var(--blue-d)}
+.chip{display:inline-block;font-size:11.5px;font-family:var(--mono);padding:2px 9px;border-radius:6px;font-weight:600;margin:2px 3px 2px 0;background:var(--purple-l);color:var(--purple)}
+.conf{display:inline-block;font-size:10.5px;font-family:var(--mono);padding:1px 7px;border-radius:5px;font-weight:700;white-space:nowrap}
+.conf.v{background:var(--green-l);color:var(--green)}.conf.i{background:var(--amber-l);color:var(--amber)}.conf.u{background:var(--line-2);color:var(--ink-3)}
+.tabs{display:flex;gap:0;border-bottom:2px solid var(--line);margin:16px 0 0;flex-wrap:wrap}
+.tab{padding:9px 18px;font-size:13px;font-weight:600;color:var(--ink-3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;user-select:none;transition:all .2s}
+.tab.active{color:var(--blue-d);border-bottom-color:var(--amber)}.tab:hover{color:var(--blue-d)}
+.panel{display:none;padding:14px 2px 2px}.panel.active{display:block}
+.foot{max-width:none;padding:24px 44px;color:var(--ink-3);font-size:12.5px;text-align:center}
+:root{color-scheme:light}
+html[data-theme="dark"]{
+  color-scheme:dark;
+  --ink:#e7eaf1;--ink-2:#aeb7c5;--ink-3:#828c9b;--line:#2b3340;--line-2:#232b36;
+  --bg:#11151c;--paper:#1b212c;--blue:#5ba0d8;--blue-d:#86b8e3;--blue-l:#1b2a3b;
+  --teal:#3cb8b2;--teal-l:#15302f;--amber:#e2a84e;--amber-l:#332914;--green:#48c781;--green-l:#163021;
+  --red:#ec6a61;--red-l:#341b19;--purple:#ad90e8;--purple-l:#241b38;
+  --shadow:0 8px 28px rgba(0,0,0,.5);--shadow-sm:0 2px 10px rgba(0,0,0,.4);
+}
+html[data-theme="dark"] body{background:var(--bg)}
+html[data-theme="dark"] .masthead{background:linear-gradient(135deg,#14365a,#1c4d7d 58%,#2a66a1)}
+html[data-theme="dark"] code{background:#222a35;color:#86b8e3}
+html[data-theme="dark"] thead th{background:#222a33}
+html[data-theme="dark"] tbody tr:hover,html[data-theme="dark"] tbody tr:hover td{background:rgba(255,255,255,.045)}
+html[data-theme="dark"] .tldr{background:linear-gradient(135deg,var(--blue-l),#162130);border-color:#2c3b4e}
+html[data-theme="dark"] .dact{background:#161c25}
+html[data-theme="dark"] .dnode{background:#1b212c}
+html[data-theme="dark"] .dpill.ok{border-color:#1f5036}html[data-theme="dark"] .dpill.stop{border-color:#5a2a26}html[data-theme="dark"] .dpill.flush{border-color:#274a6e}
+.themebtn{position:absolute;top:18px;right:20px;z-index:5;background:rgba(255,255,255,.14);
+  border:1px solid rgba(255,255,255,.28);color:#eaf2fb;width:34px;height:34px;border-radius:9px;
+  cursor:pointer;display:grid;place-items:center;padding:0;transition:.18s}
+.themebtn:hover{background:rgba(255,255,255,.26)}.themebtn:active{transform:scale(.94)}
+.themebtn svg{width:16px;height:16px;display:block}
+</style>
+</head>
+<body>
+<div class="masthead"><button class="themebtn" id="themeBtn" onclick="toggleTheme()" title="切换主题"></button><div class="mast-in">
+  <div class="kicker">工程指南 · PERFETTO 改造</div>
+  <h1>触发式快照：部署 / 设计 / 实现</h1>
+  <div class="sub">让 <code>traced_probes</code> 常驻采集却低开销，仅在机器人出现异常、由业务主动触发时，落盘"触发前 N 秒 + 后 M 秒"的现场。本文给运维、设计、实现三类读者各一条清晰路径。</div>
+  <div class="mast-tags" id="mastTags"></div>
+</div></div>
+
+<div class="shell">
+  <nav class="toc">
+    <div class="h">目录</div>
+    <a href="#s1"><span class="n">01</span>它解决什么</a>
+    <a href="#s2"><span class="n">02</span>快速部署</a>
+    <a href="#a21" class="sub">· 前置条件</a>
+    <a href="#a22" class="sub">· 配置 / 触发 / 取快照</a>
+    <a href="#s3"><span class="n">03</span>架构与机制</a>
+    <a href="#s4"><span class="n">04</span>配置参考</a>
+    <a href="#s5"><span class="n">05</span>实现</a>
+    <a href="#s6"><span class="n">06</span>实测验证</a>
+    <a href="#s7"><span class="n">07</span>兼容性与边界</a>
+  </nav>
+  <main class="content">
+
+    <section class="sec" id="s1">
+      <h2 class="sh"><span class="n">1</span>它解决什么</h2>
+      <div class="tldr">
+        <h4>一句话</h4>
+        <p>常驻全量 ftrace 抓取最贵的不是落盘，而是 <strong>把内核 ftrace 二进制页解析成 protobuf</strong> 的常驻 CPU。本方案让常驻期<em>只搬运不解析</em>（页进每 CPU 环形缓冲），仅在触发时才解析落盘——常驻 CPU 实测从 ~39% 降到 ~8%（约 80%），IO 归零，内存以硬上限管控。</p>
+      </div>
+      <p class="lead">背景是机器人稳定性排查：问题往往转瞬即逝，事后再开 trace 已经晚了；而 <code>traced</code>/<code>traced_probes</code> 常驻全量采集又会在 CPU/IO 上压垮系统。</p>
+      <p>真正的矛盾在于：要保留"触发前 N 秒"的现场，这 N 秒的数据在触发<strong>之前</strong>就必须已经在缓冲区里——你无法事后回放没采过的过去。所以"前 N 秒高保真"与"常驻零开销"在物理上冲突。本方案的破法是改变常驻期的<em>采集形态</em>：内核 ftrace 页常驻期只 <code>memcpy</code> 进用户态环形缓冲、跳过解析，触发时（由业务发 <code>CLONE_SNAPSHOT</code> 触发）才一次性解析进 trace 并被克隆落盘。前 N 秒来自环形缓冲，后 M 秒来自触发后的 <code>stop_delay_ms</code> 延迟窗口。</p>
+      <div class="box key"><span class="bl">读者路径</span>只想<strong>部署</strong>：直接看 §2 + §4 配置参考。想懂<strong>为什么这么设计</strong>：§3 架构。要<strong>改代码 / 排障</strong>：§5 实现 + §7 边界。所有结论的可信度都用 <span class="conf v">verified</span>（真机实测/源码核对）/ <span class="conf i">inferred</span>（合理推断）/ <span class="conf u">unknown</span> 标注。
+      </div>
+    </section>
+
+    <section class="sec" id="s2">
+      <h2 class="sh"><span class="n">2</span>快速部署</h2>
+      <p class="lead">部署只需三步：放一份 trace config、让业务在异常时发一个具名触发、到约定路径取快照文件。不需要写代码——能力都在配置层。</p>
+
+      <h3 id="a21">前置条件</h3>
+      <p>目标机需要满足两点，缺一不可 <span class="conf v">verified</span>（本项目在内核 6.8 + 真实 tracefs 的机器上验证）：内核挂载了 <code>tracefs</code>（<code>/sys/kernel/tracing</code>），且 Perfetto 版本支持 <code>CLONE_SNAPSHOT</code>（v38+ / Android V+）。前者是 ftrace 的前提，后者是"触发即克隆快照"机制的前提——更老的 Perfetto 没有这个触发动作，缓存的页永远不会被解析。</p>
+      <div class="box warn"><span class="bl">内存护栏（最易踩的坑）</span>每 CPU 缓冲上限 × CPU 数 必须落在 <code>traced_probes</code> 内存看门狗内（默认 ~32 MB），否则进程被自身看门狗杀掉 <span class="conf v">verified</span>。曾用 <code>per_cpu_mem_limit_kb=8192</code> 在 128 核机上分配到 358 MB → 被杀；降到 256 KB/核（总 ≤32 MB）即正常。核越多，每核缓冲越要小——大窗口靠 §4 的磁盘溢出或进程过滤承接。
+      </div>
+
+      <h3 id="a22">配置 / 触发 / 取快照</h3>
+      <p>用下面这份机器人综合配置启动一个常驻会话（<code>perfetto -c robot.cfg --txt -o /data/snap.pftrace</code>）。它常态等待触发，不落盘；触发到来后，把"前 N + 后 M 秒"写成带计数后缀的快照文件（<code>snap.pftrace.0</code>、<code>.1</code>…）。</p>
+      <pre><code>buffers { size_kb: 131072 fill_policy: RING_BUFFER }   # 须能容纳 N+M 秒解析量
+data_sources { config {
+  name: "linux.ftrace"
+  ftrace_config {
+    ftrace_events: "sched/sched_switch"
+    ftrace_events: "irq/irq_handler_entry"
+    ftrace_events: "raw_syscalls/sys_enter"      # 通路C：详细 ftrace 直接列在这里
+    deferred_raw_capture {
+      enabled: true
+      per_cpu_mem_limit_kb: 256                   # × 核数 ≤ ~32MB 看门狗
+      retain_seconds: 30                          # 从快照时刻往回的窗口
+      # disk_overflow_path: "/data/perfetto/draw" # 可选：大窗口溢出到磁盘
+      # per_cpu_disk_limit_kb: 4096
+    }
+    pid_filter_control_file: "/run/perfetto/ftrace_pid_filter"  # 可选：动态进程过滤
+  }
+}}
+trigger_config {
+  trigger_mode: CLONE_SNAPSHOT
+  trigger_timeout_ms: 86400000
+  triggers { name: "snap" stop_delay_ms: 2000 }  # 后 M 秒 = 2s
+}</code></pre>
+      <p>业务发现异常时，<strong>主动发 <code>snap</code> 触发</strong>——这是设计上唯一的触发方式（机器人自有健康判定，不内置检测器）。两种等价做法：</p>
+      <div class="grid-2">
+        <div class="card"><h4>进程内（SDK）</h4><p>业务自己的进程里一行即可：</p><pre><code>Tracing::ActivateTriggers({"snap"});</code></pre><p>最直接，无需外部进程。</p></div>
+        <div class="card"><h4>脚本 / 外部进程（CLI）</h4><p>用一份仅含 <code>activate_triggers</code> 的配置：</p><pre><code>perfetto -c snap_trigger.cfg --txt
+# snap_trigger.cfg 内容：
+#   activate_triggers: "snap"</code></pre><p>注意 <code>perfetto</code> <strong>没有</strong> <code>--trigger</code> 选项 <span class="conf v">verified</span>。</p></div>
+      </div>
+      <div class="box tip"><span class="bl">动态进程过滤（可选，HTTP-ready）</span>若只关心某些进程，往 <code>pid_filter_control_file</code> 写目标 PID 列表（每行一个），<code>traced_probes</code> 约 1s 内拾取并重写内核 <code>set_event_pid</code>，运行时增删 PID 即时生效。HTTP/gRPC 服务只需写这个文件即可接入。实测：运行中写入目标 PID → 其全部线程被动态捕获 <span class="conf v">verified</span>。
+      </div>
+    </section>
+
+    <section class="sec" id="s3">
+      <h2 class="sh"><span class="n">3</span>架构与机制</h2>
+      <p class="lead">方案按数据源特性分三条通路，汇入同一份快照；只有"全量重型 ftrace"那条做了真改造，其余复用 Perfetto 原生能力。</p>
+      <div class="diagram">
+        <div class="dact a1"><div class="dhead">通路划分 <span class="dmeta">三路汇入单快照</span></div><div class="dbody">
+          <div class="dflow">
+            <div class="dnode">A · 低开销源<small>SDK + 低频 ftrace</small></div>
+            <span class="darr">→</span>
+            <div class="dnode">B · 全量重型 ftrace<small>deferred-raw 旁路（唯一改造）</small></div>
+            <span class="darr">→</span>
+            <div class="dnode">C · 详细 ftrace<small>纯配置，折入 B 的事件集</small></div>
+          </div>
+          <div class="dnote">A 走原生解析（开销本就低）；C 只是在配置里多列事件，和 B 一起常驻缓存、触发时进同一快照；B 是核心改造。</div>
+        </div></div>
+        <div class="dconn">触发到来</div>
+        <div class="dact a2"><div class="dhead">通路 B · deferred-raw 生命周期 <span class="dmeta">常驻搬运 → 触发解析</span></div><div class="dbody">
+          <div class="dpipe"><span class="dstep">read() 内核页</span><span class="dstep">memcpy 进每CPU环形buf</span><span class="dstep">跳过解析（常驻 CPU≈搬运）</span></div>
+          <div class="dside">
+            <div class="dpill flush"><b>触发 +M 秒</b>：CLONE_SNAPSHOT 发 kTraceClone flush 给 traced_probes</div>
+            <div class="dpill ok"><b>解析</b>：FtraceController 用 table/symbolizer 把窗口内页分批解析进 TraceWriter</div>
+            <div class="dpill ok"><b>克隆落盘</b>：service buffer 被克隆为快照文件</div>
+          </div>
+          <div class="dnote">解析挂在原生 clone-flush 钩子上：先把页解析进 writer 并提交，再 ack flush，service 克隆时数据已就位。</div>
+        </div></div>
+      </div>
+      <h3>三个决定性的设计点</h3>
+      <p>第一，<strong>前后都要全量高保真</strong>排除了"常驻降频采样"，所以降常驻 CPU 只剩"延迟解析"一条路——常驻期把页留在缓冲里不解析，触发时才解析。第二，<em>内核 ftrace 时钟域</em>：页时间戳与 <code>GetBootTimeNs()</code> 仅在 <code>trace_clock=boot</code> 时同域，所以按时间裁剪（<code>retain_seconds</code>）只在 boot 时钟启用，其它时钟回退全量解析 <span class="conf v">verified</span>。第三，<strong>触发瞬间的内存峰值并不省</strong>：解析后的 protobuf 仍要经 service buffer 才被克隆，故 <code>buffer.size_kb</code> 须能容纳 N+M 秒解析量——常驻内存省了，峰值不省，这是必须知道的取舍。</p>
+      <div class="box intuit"><span class="bl">为什么这样能成立</span>内核 ftrace 页本就是自包含的二进制；<code>memcpy</code> 一页的成本远低于把页里每个事件解析成 protobuf。把"解析"从常驻期挪到触发那一刻，就把持续的 CPU 成本变成了一次性的峰值——而峰值发生时业务已经在出问题、本就要抓现场，这一刻的 CPU 花得值。
+      </div>
+    </section>
+
+    <section class="sec" id="s4">
+      <h2 class="sh"><span class="n">4</span>配置参考</h2>
+      <p class="lead">下面是本方案新增 / 复用的 <code>FtraceConfig</code> 字段。全部 optional，老 <code>traced_probes</code> 忽略未知字段（退化为普通解析），版本前后兼容。</p>
+      <div class="table-wrap"><table><thead><tr><th>字段</th><th>类型</th><th>含义</th><th>默认 / 说明</th></tr></thead><tbody id="cfgRows"></tbody></table></div>
+      <div class="box"><span class="bl">N / M 与 retain_seconds 的关系</span><code>retain_seconds</code> 是从<strong>快照时刻</strong>（= 触发 + <code>stop_delay_ms</code>）往回的窗口。要覆盖"触发前 N + 后 M 秒"，配 <code>retain_seconds = N + M</code>；后 M 秒由 <code>stop_delay_ms</code> 决定（这段时间缓冲继续收新页）。
+      </div>
+    </section>
+
+    <section class="sec" id="s5">
+      <h2 class="sh"><span class="n">5</span>实现</h2>
+      <p class="lead">改造集中在 <code>traced_probes</code> 侧的 ftrace 子系统，不动 <code>tracing_service_impl.cc</code> 的核心——触发、CLONE、clock snapshot 全复用原生。下表是关键文件与职责。</p>
+      <div class="table-wrap"><table><thead><tr><th>文件</th><th>作用</th></tr></thead><tbody id="fileRows"></tbody></table></div>
+      <h3>触发解析为何挂在 flush 钩子上</h3>
+      <p>关键时序是：<code>CLONE_SNAPSHOT</code> 克隆的是 <strong>service 端 buffer</strong>，克隆前会给所有 producer 发一次 <code>Reason::kTraceClone</code> 的 flush，并在收到 ack 后才复制。所以把"解析 raw → 写 TraceWriter → 提交"放在这次 flush 的回调里、ack 之前完成，数据就会在克隆时已落入 service buffer。<code>ProbesProducer::Flush</code> 识别 <code>kTraceClone</code> 标记数据源，<code>FtraceDataSource::OnFtraceFlushComplete</code> 在 <code>writer_->Flush()</code> 前调 <code>FtraceController::ParseDeferredRawForClone</code>——后者持有解析所需的 <code>ProtoTranslationTable</code> 与 <code>symbolizer</code>，逐 CPU 把窗口内页<strong>分批</strong>（32 页/批）喂给现有 <code>ProcessPagesForDataSource</code>，从而与稳态解析输出完全一致。</p>
+      <div class="box danger"><span class="bl">代码审查修掉的真问题</span>全分支审查发现并已修复 <span class="conf v">verified</span>：① 动态过滤 watcher 捕获的 <code>Tracefs*</code> 在 secondary instance 销毁时悬垂（UAF）→ 绑定到 owning data source 提前释放；② 磁盘 IO 用 <code>PERFETTO_CHECK</code>，磁盘满即 abort 守护进程 → 改优雅降级 + EINTR；③ 触发解析曾把整窗口拼成单个连续 buffer（抵消 spill、OOM 风险）→ 改 32 页分批，峰值内存有界；④ 磁盘溢出文件从不删除 → open-then-unlink 自动回收。
+      </div>
+    </section>
+
+    <section class="sec" id="s6">
+      <h2 class="sh"><span class="n">6</span>实测验证</h2>
+      <p class="lead">以下数据均来自真机（内核 6.8 / 128 核 / 真实 tracefs）跑完整 <code>traced</code>+<code>traced_probes</code>+<code>perfetto</code> 栈 <span class="conf v">verified</span>。它们是"降开销"命题的直接证据，而非估算。</p>
+      <div class="table-wrap"><table><thead><tr><th>场景</th><th>指标</th><th>结果</th><th>置信</th></tr></thead><tbody id="measRows"></tbody></table></div>
+      <div class="box tip"><span class="bl">一个被识破的伪回归</span>排查中曾见所有 trace 压成 ~40 事件，差点误判为代码 bug；用对照实验（普通配置也只有 23 事件）+ 直接读 tracefs 状态，定位到是上一个测试在 <code>set_event_pid</code> 留下的过滤残留（指向 PID 1）。这也印证一个运维点：<strong>强杀 <code>traced_probes</code> 会残留 tracefs 过滤状态</strong>（对所有 ftrace 配置都一样，非本改造独有），干净停止时 muxer 会清。
+      </div>
+    </section>
+
+    <section class="sec" id="s7">
+      <h2 class="sh"><span class="n">7</span>兼容性与边界</h2>
+      <p class="lead">对外完全兼容（标准 trace、版本前后兼容、GN/Android/Bazel 三套构建均已同步）；对内，进程过滤按 Perfetto 既有约定是<em>独占特性</em>，deferred-raw 可与其他会话并存。</p>
+      <div class="grid-2">
+        <div class="card"><h4>兼容 <span class="conf v">verified</span></h4>
+          <p><strong>trace 格式</strong>：快照是标准 Perfetto trace，<code>trace_processor</code>/UI 正常读。<strong>版本</strong>：新 proto 字段全 optional，前后向兼容。<strong>并发会话</strong>：<code>deferred_raw</code> 不动全局 tracefs 状态，CpuReader 把页路由给所有数据源，可与普通会话并存。<strong>构建</strong>：<code>gen_all</code> 已同步 Android.bp + bazel BUILD。</p></div>
+        <div class="card"><h4>边界 / 待知</h4>
+          <p><strong>进程过滤是独占特性</strong>：它改全局 <code>set_event_pid</code>，Perfetto 强制单租户（已把 <code>pid_filter_control_file</code> 补进 <code>HasExclusiveFeatures</code>）。<strong>非 boot 时钟</strong>：<code>retain_seconds</code> 时间裁剪仅 boot 时钟生效，其它回退全量解析 <span class="conf i">inferred</span>（按时钟域推断，未在非 boot 机型实测）。<strong>超大窗口</strong>：解析仍同步运行，<code>retain_seconds</code> 已界定其量，但极大窗口下彻底消除 watchdog 风险需异步让步（未做）。</p></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+<div class="foot">触发式快照 · 部署/设计/实现指南 · <span style="font-family:var(--mono)">house-style v1.0</span> · 数据源：本项目真机实测 + 源码（fork dev/oakley/triggered-snapshot-design）</div>
+
+<script type="application/json" id="data">
+{
+  "mastTags": ["deferred-raw","CLONE_SNAPSHOT","ftrace","机器人稳定性","常驻低开销"],
+  "config": [
+    {"f":"deferred_raw_capture.enabled","t":"bool","m":"开启 deferred-raw：常驻只缓存页、不解析","d":"false"},
+    {"f":"deferred_raw_capture.per_cpu_mem_limit_kb","t":"uint32","m":"每 CPU 内存环形缓冲上限","d":"× 核数须 ≤ ~32MB 看门狗"},
+    {"f":"deferred_raw_capture.retain_seconds","t":"uint32","m":"从快照时刻往回的保留/解析窗口（秒）","d":"0=不裁剪；仅 boot 时钟生效"},
+    {"f":"deferred_raw_capture.disk_overflow_path","t":"string","m":"磁盘溢出环形文件目录（大窗口）","d":"空=纯内存"},
+    {"f":"deferred_raw_capture.per_cpu_disk_limit_kb","t":"uint32","m":"每 CPU 磁盘溢出上限","d":"配合 disk_overflow_path"},
+    {"f":"pids_to_trace","t":"repeated uint32","m":"进程级过滤：PID→展开当前 TID，自动开 event-fork 跟随子线程","d":"内核级，独占特性"},
+    {"f":"pid_filter_control_file","t":"string","m":"动态进程过滤控制文件（运行时重写 set_event_pid，HTTP-ready）","d":"独占特性"},
+    {"f":"trigger_config.triggers[].stop_delay_ms","t":"uint32","m":"触发后延迟多久做快照 = 后 M 秒窗口","d":"CLONE_SNAPSHOT 模式"}
+  ],
+  "files": [
+    {"f":"raw_ftrace_ring_buffer.{h,cc}","r":"每 CPU 原始页环形缓冲：内存段 + 可选磁盘溢出段（pwrite/pread，open-then-unlink，IO 失败优雅降级）"},
+    {"f":"cpu_reader.cc","r":"ReadAndProcessBatch 旁路：deferred 源 memcpy 进环形缓冲、跳过解析；ParseRawRingBufferInto 分批复用 ProcessPagesForDataSource"},
+    {"f":"ftrace_data_source.{h,cc}","r":"持每 CPU 环形缓冲；OnFtraceFlushComplete 在 clone-flush 时先解析后 flush writer"},
+    {"f":"ftrace_controller.{h,cc}","r":"ParseDeferredRawForClone（含 retain_seconds 时间裁剪 + 时钟域守卫）；管理动态过滤 watcher 生命周期"},
+    {"f":"ftrace_pid_filter_watcher.{h,cc}","r":"轮询控制文件、运行时重写 set_event_pid（依赖注入，PollOnce 单测覆盖）"},
+    {"f":"ftrace_config_muxer.cc","r":"解析 deferred/pids/控制文件配置；pids→TID 展开 + event-fork；独占特性判定"},
+    {"f":"probes_producer.cc","r":"Flush 识别 kTraceClone 标记 ftrace 数据源"}
+  ],
+  "measured": [
+    {"s":"deferred-raw vs 立即解析（同负载 30s）","k":"traced_probes 常驻 CPU%","r":"~39% → ~8%（约 80%↓）","c":"v"},
+    {"s":"无触发","k":"快照大小","r":"~11 KB（页只缓存未解析）","c":"v"},
+    {"s":"CLONE_SNAPSHOT 触发 e2e","k":"快照 ftrace 事件数","r":"247,837（含 167k sched_switch）","c":"v"},
+    {"s":"磁盘溢出（64KB内存+2MB磁盘/核）","k":"快照事件数 / 文件","r":"~104 万 / 128 个 2MB 文件，内存不破护栏","c":"v"},
+    {"s":"进程过滤（31 进程留 1）","k":"traced_probes CPU% / 目标占比","r":"100% → 5.4%；目标 TID 占 99.97%","c":"v"},
+    {"s":"动态控制文件","k":"运行时写入目标 PID","r":"目标 5 线程全部被动态捕获","c":"v"},
+    {"s":"retain_seconds=2（8s 稳态）","k":"快照时间跨度","r":"1.999s（18 万事件），非全 buffer","c":"v"}
+  ]
+}
+</script>
+
+<script>
+const DATA=JSON.parse(document.getElementById('data').textContent);
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const code=s=>esc(s).replace(/`([^`]+)`/g,'<code>$1</code>');
+document.getElementById('mastTags').innerHTML=DATA.mastTags.map(t=>`<span>${esc(t)}</span>`).join('');
+document.getElementById('cfgRows').innerHTML=DATA.config.map(r=>`<tr><td><code>${esc(r.f)}</code></td><td>${esc(r.t)}</td><td>${esc(r.m)}</td><td>${esc(r.d)}</td></tr>`).join('');
+document.getElementById('fileRows').innerHTML=DATA.files.map(r=>`<tr><td><code>${esc(r.f)}</code></td><td>${esc(r.r)}</td></tr>`).join('');
+const cmap={v:['v','verified'],i:['i','inferred'],u:['u','unknown']};
+document.getElementById('measRows').innerHTML=DATA.measured.map(r=>{const c=cmap[r.c]||cmap.u;return `<tr><td>${esc(r.s)}</td><td>${esc(r.k)}</td><td>${esc(r.r)}</td><td><span class="conf ${c[0]}">${c[1]}</span></td></tr>`;}).join('');
+</script>
+
+<script>
+const links=[...document.querySelectorAll('.toc a')];
+const secs=links.map(a=>document.querySelector(a.getAttribute('href')));
+const obs=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){
+  const i=secs.indexOf(e.target);links.forEach(l=>l.classList.remove('active'));
+  if(i>=0)links[i].classList.add('active');}})},{rootMargin:'-20% 0px -70% 0px'});
+secs.forEach(s=>s&&obs.observe(s));
+</script>
+<script>
+(function(){
+var SUN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2M12 19.5v2M4.5 12h-2M21.5 12h-2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4"/></svg>',MOON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13.5A8 8 0 1 1 10.5 4a6.3 6.3 0 0 0 9.5 9.5z"/></svg>';
+function applyTheme(t){document.documentElement.setAttribute('data-theme',t);var b=document.getElementById('themeBtn');if(b){b.innerHTML=t==='dark'?MOON:SUN;b.title=t==='dark'?'切换到浅色':'切换到深色';}}
+window.toggleTheme=function(){var c=document.documentElement.getAttribute('data-theme')==='dark'?'dark':'light';var t=c==='dark'?'light':'dark';try{localStorage.setItem('theme',t)}catch(e){}applyTheme(t);};
+var s=null;try{s=localStorage.getItem('theme')}catch(e){}
+applyTheme(s||((window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light'));
+})();
+</script>
+</body>
+</html>
