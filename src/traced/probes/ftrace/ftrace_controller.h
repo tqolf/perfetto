@@ -78,6 +78,12 @@ class FtraceController {
   // all started data sources.
   void Flush(FlushRequestID);
 
+  // Parses the per-cpu deferred-raw ring buffers of |ds| into its TraceWriter.
+  // Called on a CLONE_SNAPSHOT flush so the stashed (unparsed) pages are
+  // materialized into the trace right before the buffers are cloned. Uses the
+  // owning instance's translation table and the controller's symbolizer.
+  void ParseDeferredRawForClone(FtraceDataSource* ds);
+
   void DumpFtraceStats(FtraceDataSource*, FtraceStats*);
 
   base::WeakPtr<FtraceController> GetWeakPtr() {

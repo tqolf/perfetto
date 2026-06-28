@@ -20,6 +20,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 
 #include "perfetto/base/flat_set.h"
 #include "perfetto/ext/base/weak_ptr.h"
@@ -105,6 +106,10 @@ class FtraceDataSource : public ProbesDataSource {
   }
   size_t num_raw_ring_buffers() const { return raw_ring_buffers_.size(); }
 
+  // Marks |id| as a CLONE_SNAPSHOT flush, so OnFtraceFlushComplete() parses the
+  // deferred-raw buffers into the trace before flushing the writer.
+  void NoteCloneFlush(FlushRequestID id) { clone_flush_ids_.insert(id); }
+
   uint64_t* mutable_bundle_end_timestamp(size_t cpu) {
     if (cpu >= bundle_end_ts_by_cpu_.size())
       bundle_end_ts_by_cpu_.resize(cpu + 1);
@@ -131,6 +136,8 @@ class FtraceDataSource : public ProbesDataSource {
   std::unique_ptr<TraceWriter> writer_;
   // Per-cpu deferred-raw page buffers (empty unless deferred_raw_enabled).
   std::vector<std::unique_ptr<RawFtraceRingBuffer>> raw_ring_buffers_;
+  // Flush ids known to be CLONE_SNAPSHOT flushes (set by NoteCloneFlush()).
+  std::set<FlushRequestID> clone_flush_ids_;
   base::WeakPtr<FtraceController> controller_weak_;
   // Muxer-held state for parsing ftrace according to this data source's
   // configuration. Not the raw FtraceConfig proto (held by |config_|).

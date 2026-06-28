@@ -45,7 +45,9 @@
 #include "src/kallsyms/kernel_symbol_map.h"
 #include "src/kallsyms/lazy_kernel_symbolizer.h"
 #include "src/traced/probes/ftrace/atrace_hal_wrapper.h"
+#include "src/traced/probes/ftrace/compact_sched.h"
 #include "src/traced/probes/ftrace/cpu_reader.h"
+#include "src/traced/probes/ftrace/raw_ftrace_ring_buffer.h"
 #include "src/traced/probes/ftrace/cpu_stats_parser.h"
 #include "src/traced/probes/ftrace/event_info.h"
 #include "src/traced/probes/ftrace/event_info_constants.h"
@@ -509,6 +511,33 @@ void FtraceController::Flush(FlushRequestID flush_id) {
   ForEachInstance([&](FtraceInstanceState* instance) {
     for (FtraceDataSource* ds : instance->started_data_sources) {
       ds->OnFtraceFlushComplete(flush_id);
+    }
+  });
+}
+
+void FtraceController::ParseDeferredRawForClone(FtraceDataSource* target_ds) {
+  const FtraceDataSourceConfig* ds_config = target_ds->parsing_config();
+  if (!ds_config || !ds_config->deferred_raw_enabled)
+    return;
+  const size_t page_size = base::GetSysPageSize();
+  ForEachInstance([&](FtraceInstanceState* instance) {
+    for (FtraceDataSource* ds : instance->started_data_sources) {
+      if (ds != target_ds)
+        continue;
+      const ProtoTranslationTable* table = instance->table.get();
+      // Window is bounded by the ring buffer capacity (per_cpu_mem_limit_kb).
+      // Time-based trimming via retain_seconds is a future refinement.
+      for (size_t cpu = 0; cpu < ds->num_raw_ring_buffers(); cpu++) {
+        RawFtraceRingBuffer* raw = ds->raw_ring_buffer(cpu);
+        if (!raw)
+          continue;
+        CompactSchedBuffer compact_sched_buf;
+        CpuReader::ParseRawRingBufferInto(
+            raw, /*cutoff_ts=*/0, page_size, cpu, ds_config,
+            ds->trace_writer(), ds->mutable_metadata(),
+            ds->mutable_parse_errors(), ds->mutable_bundle_end_timestamp(cpu),
+            &compact_sched_buf, table, &symbolizer_);
+      }
     }
   });
 }

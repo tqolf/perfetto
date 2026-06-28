@@ -641,7 +641,7 @@ void ProbesProducer::OnTracingSetup() {
 void ProbesProducer::Flush(FlushRequestID flush_request_id,
                            const DataSourceInstanceID* data_source_ids,
                            size_t num_data_sources,
-                           FlushFlags) {
+                           FlushFlags flush_flags) {
   PERFETTO_DLOG("ProbesProducer::Flush(%" PRIu64 ") begin", flush_request_id);
   PERFETTO_DCHECK(flush_request_id);
   auto log_on_exit = base::OnScopeExit([&] {
@@ -685,6 +685,11 @@ void ProbesProducer::Flush(FlushRequestID flush_request_id,
     };
     PERFETTO_DLOG("Flushing data source %" PRIu64 " %s", ds_id,
                   data_source->descriptor->name);
+    if (flush_flags.reason() == FlushFlags::Reason::kTraceClone &&
+        data_source->descriptor == &FtraceDataSource::descriptor) {
+      static_cast<FtraceDataSource*>(data_source)
+          ->NoteCloneFlush(flush_request_id);
+    }
     data_source->Flush(flush_request_id, flush_callback);
   }
 }
