@@ -289,6 +289,11 @@ watchdog_posix.cc: Memory window of 358 MB is above the 34 MB limit.
 - 动态控制入口选 (A) 还是别的形式（控制文件 watch，第二步实现）；
 - `event-fork` 同时影响 function tracer 的 `function-fork`，本方案只在设置 `pids_to_trace` 时开启，且 deferred-raw 不用 function tracer，无冲突。
 
+### 动态控制文件 watch —— 已实现 + e2e
+**已实现**（commit 6ee1f4c2cf）：`FtraceConfig.pid_filter_control_file`（字段 40）。traced_probes 起一个 `FtracePidFilterWatcher`（task runner 上轮询，默认 1s），控制文件内容 = 完整目标 PID 集（每行一个，`#` 注释/空行忽略）；变化时展开 TID + 保留静态 tids/pids，**运行时重写 `set_event_pid`**，并开启 event-fork。依赖注入设计，`PollOnce`/`ParsePidFilterFile` 单测覆盖。`ExpandPidToTids`/`ParsePidFilterFile` 提到 `ftrace_config_utils` 共享（DRY）。
+
+真机 e2e：控制文件初始放无关 PID（目标排除）→ 运行中 `echo $TARGET > 控制文件` → watcher 1s 内拾取 → 目标的 **5 个线程全部被动态捕获**（各 ~6700 事件）。证明运行时增删 PID 生效。
+
 ### 控制入口与 HTTP
 控制文件天然适合后接 HTTP/gRPC：它把"机制"和"接口"解耦。traced_probes 只认一个控制文件（如 `/run/perfetto/ftrace_pid_filter`），内容变化即重算 TID 并重写 `set_event_pid`；HTTP 服务只是薄壳（`PUT /filter` → 写文件），可作为独立进程、不与 traced_probes 耦合。控制协议建议**行式**（每行一个 PID，或 `+1234`/`-1234` 增删），便于 HTTP 转发与 `echo >>` 手动调试。机器人单机部署，HTTP 服务与 traced_probes 共享文件系统，无跨主机问题。
 
