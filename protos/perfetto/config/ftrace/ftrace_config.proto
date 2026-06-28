@@ -302,6 +302,13 @@ message FtraceConfig {
   // Supported on: Android 25Q3+.
   repeated uint32 tids_to_trace = 35;
 
+  // Filter ftrace events by Process ID (PID), at process granularity. Each PID
+  // is expanded to all of its CURRENT threads (read from /proc/<pid>/task) and
+  // unioned with `tids_to_trace`, then written to set_event_pid. To also follow
+  // threads/children spawned *after* setup, the kernel `event-fork` option is
+  // enabled automatically when this field is set (see TracefsOption).
+  repeated uint32 pids_to_trace = 39;
+
   // Tracefs options to set directly in the tracefs instance. This is a very
   // niche feature since almost all of the options deal with formatting textual
   // output (the /trace file), which perfetto doesn't use.

@@ -16,6 +16,8 @@
 
 #include "src/traced/probes/ftrace/ftrace_config_muxer.h"
 
+#include <unistd.h>
+
 #include <memory>
 
 #include "perfetto/ext/base/utils.h"
@@ -1386,6 +1388,31 @@ TEST_F(FtraceConfigMuxerFakeTableTest, TidFilter) {
   EXPECT_CALL(tracefs_, ClearFile("/root/set_event_pid"));
   ASSERT_TRUE(model_.RemoveConfig(id));
   ASSERT_FALSE(model_.GetExclusiveFeatureActiveForTesting());
+}
+
+TEST_F(FtraceConfigMuxerFakeTableTest, ProcessLevelPidFilter) {
+  FtraceConfig config;
+  // Use this test process: /proc/self/task always contains the main thread
+  // (tid == pid), so the expanded filter must contain getpid().
+  config.add_pids_to_trace(static_cast<uint32_t>(getpid()));
+
+  ON_CALL(tracefs_, ReadFileIntoString("/root/current_tracer"))
+      .WillByDefault(Return("nop"));
+
+  EXPECT_CALL(tracefs_, WriteToFile(_, _)).Times(AnyNumber());
+  EXPECT_CALL(tracefs_, ClearFile(_)).Times(AnyNumber());
+
+  // PID expanded to its current TIDs (at least the main thread).
+  EXPECT_CALL(tracefs_,
+              WriteToFile("/root/set_event_pid",
+                          testing::HasSubstr(std::to_string(getpid()))))
+      .WillOnce(Return(true));
+  // event-fork enabled so future threads/children are followed by the kernel.
+  EXPECT_CALL(tracefs_, WriteToFile("/root/options/event-fork", "1"))
+      .WillOnce(Return(true));
+
+  FtraceConfigId id = 47;
+  ASSERT_TRUE(model_.SetupConfig(id, config));
 }
 
 TEST_F(FtraceConfigMuxerFakeTableTest, TracingCpuMask) {

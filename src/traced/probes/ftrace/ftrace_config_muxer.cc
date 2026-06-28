@@ -16,6 +16,7 @@
 
 #include "src/traced/probes/ftrace/ftrace_config_muxer.h"
 
+#include <dirent.h>
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -27,6 +28,7 @@
 #include <limits>
 
 #include "perfetto/ext/base/flat_hash_map.h"
+#include "perfetto/ext/base/string_utils.h"
 #include "perfetto/ext/base/utils.h"
 #include "protos/perfetto/config/ftrace/ftrace_config.gen.h"
 #include "protos/perfetto/trace/ftrace/generic.pbzero.h"
@@ -39,6 +41,25 @@
 
 namespace perfetto {
 namespace {
+
+// Expands a process id to all of its current thread ids by listing
+// /proc/<pid>/task. Returns an empty vector if the process is gone.
+std::vector<std::string> ExpandPidToTids(uint32_t pid) {
+  std::vector<std::string> tids;
+  std::string path = "/proc/" + std::to_string(pid) + "/task";
+  DIR* dir = opendir(path.c_str());
+  if (!dir)
+    return tids;
+  while (struct dirent* ent = readdir(dir)) {
+    if (ent->d_name[0] == '.')
+      continue;
+    std::optional<int32_t> tid = base::StringToInt32(ent->d_name);
+    if (tid.has_value())
+      tids.push_back(std::to_string(*tid));
+  }
+  closedir(dir);
+  return tids;
+}
 
 using protos::pbzero::KprobeEvent;
 
@@ -169,6 +190,7 @@ bool ValidateKprobeName(const std::string& name) {
 // details.
 bool HasExclusiveFeatures(const FtraceConfig& request) {
   return !request.tids_to_trace().empty() ||
+         !request.pids_to_trace().empty() ||
          !request.tracefs_options().empty() ||
          !request.tracing_cpumask().empty();
 }
@@ -451,16 +473,25 @@ bool FtraceConfigMuxer::SetupConfig(FtraceConfigId id,
     }
   }
 
-  if (!request.tids_to_trace().empty()) {
+  if (!request.tids_to_trace().empty() || !request.pids_to_trace().empty()) {
     std::vector<std::string> tid_strings;
     for (const auto& tid : request.tids_to_trace()) {
       tid_strings.push_back(std::to_string(tid));
     }
+    // Process-level: expand each PID to all its current threads.
+    for (uint32_t pid : request.pids_to_trace()) {
+      std::vector<std::string> tids = ExpandPidToTids(pid);
+      tid_strings.insert(tid_strings.end(), tids.begin(), tids.end());
+    }
 
-    if (!tracefs_->SetEventTidFilter(tid_strings)) {
+    if (!tid_strings.empty() && !tracefs_->SetEventTidFilter(tid_strings)) {
       PERFETTO_ELOG("Failed to set event tid filter");
       return false;
     }
+    // Auto-follow threads/children spawned after setup. event-fork only adds
+    // *future* descendants; the expansion above covers existing threads.
+    if (!request.pids_to_trace().empty())
+      tracefs_->SetTracefsOption("event-fork", true);
   }
 
   if (!request.tracefs_options().empty()) {
