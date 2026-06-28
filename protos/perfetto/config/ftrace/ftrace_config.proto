@@ -359,6 +359,20 @@ message FtraceConfig {
   optional bool initialize_ksyms_synchronously_for_testing = 14
       [deprecated = true];
 
+  // Deferred-raw capture: during steady state, traced_probes copies raw ftrace
+  // pages into a per-cpu in-memory ring buffer WITHOUT parsing them, and parses
+  // them into the trace only when a CLONE_SNAPSHOT trigger fires. Cuts resident
+  // CPU (no steady-state parse) and IO (no steady-state writeback).
+  message DeferredRawCapture {
+    optional bool enabled = 1;
+    // Per-cpu in-memory ring buffer cap. Memory ~= this * num_cpus.
+    optional uint32 per_cpu_mem_limit_kb = 2;
+    // Target retained window before the trigger (seconds). Best-effort, also
+    // bounded by per_cpu_mem_limit_kb.
+    optional uint32 retain_seconds = 3;
+  }
+  optional DeferredRawCapture deferred_raw_capture = 38;
+
   // Previously drain_buffer_percent, perfetto v43-v47.
   reserved 26;
 }

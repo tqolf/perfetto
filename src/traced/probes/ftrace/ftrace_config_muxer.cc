@@ -703,6 +703,17 @@ bool FtraceConfigMuxer::SetupConfig(FtraceConfigId id,
           request.symbolize_ksyms(), request.drain_buffer_percent(),
           GetSyscallsReturningFds(syscalls_), std::move(kprobes),
           request.debug_ftrace_abi(), denser_generic_event_encoding));
+
+  // Deferred-raw capture: fill the default-valued members after construction to
+  // avoid threading three more args through the long ctor / forward_as_tuple.
+  {
+    FtraceDataSourceConfig& dsc = ds_configs_.at(id);
+    dsc.deferred_raw_enabled = request.deferred_raw_capture().enabled();
+    dsc.deferred_raw_per_cpu_mem_limit_kb =
+        request.deferred_raw_capture().per_cpu_mem_limit_kb();
+    dsc.deferred_raw_retain_seconds =
+        request.deferred_raw_capture().retain_seconds();
+  }
   return true;
 }
 

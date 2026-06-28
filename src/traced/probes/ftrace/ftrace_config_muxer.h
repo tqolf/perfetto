@@ -48,6 +48,13 @@ struct FtraceSetupErrors;
 // State held by the muxer per data source, used to parse ftrace according to
 // that data source's config.
 struct FtraceDataSourceConfig {
+  // Deferred-raw capture (see FtraceConfig.DeferredRawCapture). Default-valued
+  // non-const members, filled by FtraceConfigMuxer::SetupConfig after the
+  // object is constructed (avoids threading args through the long ctor).
+  bool deferred_raw_enabled = false;
+  uint32_t deferred_raw_per_cpu_mem_limit_kb = 0;
+  uint32_t deferred_raw_retain_seconds = 0;
+
   FtraceDataSourceConfig(
       EventFilter event_filter_in,
       EventFilter syscall_filter_in,

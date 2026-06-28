@@ -307,6 +307,32 @@ TEST_F(FtraceConfigMuxerTest, SecondaryInstanceDoNotSupportAtrace) {
   ASSERT_FALSE(model.SetupConfig(/* id= */ 73, config));
 }
 
+TEST_F(FtraceConfigMuxerTest, DeferredRawCaptureParsed) {
+  std::unique_ptr<ProtoTranslationTable> table = CreateFakeTable();
+  FtraceConfigMuxer muxer(&tracefs_, &atrace_wrapper_, table.get(),
+                          GetSyscallTable(),
+                          GetAccessiblePredefinedTracePoints(table.get()), {});
+
+  ON_CALL(tracefs_, ReadFileIntoString("/root/current_tracer"))
+      .WillByDefault(Return("nop"));
+  ON_CALL(tracefs_, ReadFileIntoString("/root/events/enable"))
+      .WillByDefault(Return("0"));
+
+  // Three distinct values so a field mix-up would fail the assertions.
+  FtraceConfig cfg = CreateFtraceConfig({"sched/sched_switch"});
+  cfg.mutable_deferred_raw_capture()->set_enabled(true);
+  cfg.mutable_deferred_raw_capture()->set_per_cpu_mem_limit_kb(8192);
+  cfg.mutable_deferred_raw_capture()->set_retain_seconds(10);
+
+  FtraceConfigId id = 91;
+  ASSERT_TRUE(muxer.SetupConfig(id, cfg));
+  const FtraceDataSourceConfig* ds_config = muxer.GetDataSourceConfig(id);
+  ASSERT_TRUE(ds_config);
+  EXPECT_TRUE(ds_config->deferred_raw_enabled);
+  EXPECT_EQ(ds_config->deferred_raw_per_cpu_mem_limit_kb, 8192u);
+  EXPECT_EQ(ds_config->deferred_raw_retain_seconds, 10u);
+}
+
 TEST_F(FtraceConfigMuxerTest, CompactSchedConfig) {
   // Set scheduling event format as validated. The pre-parsed format itself
   // doesn't need to be sensible, as the tests won't use it.
